@@ -195,6 +195,130 @@ PRESETS: dict[str, Preset] = {
         ),
         hint="SSH private key material",
     ),
+    "openai": Preset(
+        provider="openai",
+        fields=("token",),
+        optional=("org_id", "project_id"),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "OPENAI_API_KEY": "{token}",
+                    "OPENAI_ORG_ID": "{org_id}",
+                    "OPENAI_PROJECT_ID": "{project_id}",
+                },
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("api.openai.com", "*.openai.com"),
+        hint="OpenAI API key (sk-proj-/sk-)",
+    ),
+    "anthropic": Preset(
+        provider="anthropic",
+        fields=("token",),
+        materialize=(
+            {"kind": "env", "map": {"ANTHROPIC_API_KEY": "{token}"}},
+        ),
+        auth={"scheme": "header", "header": "x-api-key", "field": "token"},
+        hosts=("api.anthropic.com", "*.anthropic.com"),
+        hint="Anthropic API key (sk-ant-)",
+    ),
+    "huggingface": Preset(
+        provider="huggingface",
+        fields=("token",),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "HF_TOKEN": "{token}",
+                    "HUGGING_FACE_HUB_TOKEN": "{token}",
+                },
+            },
+            {
+                "kind": "file",
+                "path": ".cache/huggingface/token",
+                "mode": "0600",
+                "template": "{token}",
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("huggingface.co", "*.huggingface.co", "*.hf.co"),
+        hint="Hugging Face user access token (hf_)",
+    ),
+    "pypi": Preset(
+        provider="pypi",
+        fields=("token",),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "UV_PUBLISH_TOKEN": "{token}",
+                    "TWINE_USERNAME": "__token__",
+                    "TWINE_PASSWORD": "{token}",
+                    "POETRY_PYPI_TOKEN_PYPI": "{token}",
+                },
+            },
+            {
+                "kind": "file",
+                "path": ".pypirc",
+                "mode": "0600",
+                "template": "[pypi]\nusername = __token__\npassword = {token}\n",
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("upload.pypi.org", "test.pypi.org", "pypi.org", "*.pypi.org"),
+        hint="PyPI API token (pypi-)",
+    ),
+    "cloudflare": Preset(
+        provider="cloudflare",
+        fields=("token",),
+        optional=("account_id",),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "CLOUDFLARE_API_TOKEN": "{token}",
+                    "CF_API_TOKEN": "{token}",
+                    "CLOUDFLARE_ACCOUNT_ID": "{account_id}",
+                },
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("api.cloudflare.com", "*.cloudflare.com"),
+        hint="Cloudflare API token",
+    ),
+    "stripe": Preset(
+        provider="stripe",
+        fields=("token",),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "STRIPE_API_KEY": "{token}",
+                    "STRIPE_SECRET_KEY": "{token}",
+                },
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("api.stripe.com", "*.stripe.com"),
+        hint="Stripe secret or restricted key (sk_/rk_)",
+    ),
+    "slack": Preset(
+        provider="slack",
+        fields=("token",),
+        materialize=(
+            {
+                "kind": "env",
+                "map": {
+                    "SLACK_BOT_TOKEN": "{token}",
+                    "SLACK_TOKEN": "{token}",
+                },
+            },
+        ),
+        auth={"scheme": "bearer", "field": "token"},
+        hosts=("slack.com", "*.slack.com"),
+        hint="Slack bot or user token (xoxb-/xoxp-)",
+    ),
     "generic": Preset(
         provider="generic",
         fields=("token",),
