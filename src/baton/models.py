@@ -35,6 +35,10 @@ class LeaseError(BatonError):
     """Lease invalid, expired, revoked, or out of uses."""
 
 
+class RefreshError(BatonError):
+    """Credential refresh failed."""
+
+
 def _now() -> float:
     return time.time()
 
@@ -61,6 +65,7 @@ class Credential:
     secret: dict[str, str] = field(default_factory=dict)
     materialize: list[dict[str, Any]] = field(default_factory=list)
     auth: dict[str, Any] = field(default_factory=dict)
+    refresh: dict[str, Any] = field(default_factory=dict)
     scopes: list[str] = field(default_factory=list)
     expires_at: float | None = None
     notes: str = ""
@@ -84,6 +89,8 @@ class Credential:
             if self.expires_at is None
             else max(0, int(self.expires_at - _now())),
             "expired": self.expired(),
+            "refreshable": bool(self.refresh),
+            "refresh_provider": self.refresh.get("provider") or self.refresh.get("type"),
             "notes": self.notes,
         }
 
