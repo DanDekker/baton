@@ -169,6 +169,15 @@ def build(vault: Vault) -> MCPServer:
     def baton_revoke(lease_id: str) -> dict[str, Any]:
         return {"revoked": vault.revoke_lease(lease_id)}
 
+    @server.tool(
+        description="Refresh a credential using its configured refresh provider. "
+        "Updates token and expiry in place. Does not return secret values."
+    )
+    @_surfaces_errors
+    def baton_refresh(credential: str, force: bool = False) -> dict[str, Any]:
+        cred, refreshed = vault.refresh_credential(credential, force=force)
+        return {"refreshed": refreshed, **cred.public()}
+
     return server
 
 
