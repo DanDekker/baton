@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
+import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -39,6 +41,57 @@ _SAFE_HEADERS = {
     "x-ratelimit-reset",
     "x-request-id",
 }
+
+# Cloud metadata and internal link-local endpoints blocked by default
+_METADATA_HOSTS = frozenset({
+    "169.254.169.254",
+    "metadata.google.internal",
+    "metadata.local",
+    "fd00:ec2::254",
+})
+
+
+def validate_target_url(
+    url: str,
+    *,
+    allow_private: bool = False,
+    allow_loopback: bool = True,
+) -> None:
+    """SSRF guard: reject non-http schemes, metadata services, and internal/private IPs."""
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise BrokerError(f"unsupported URL scheme {scheme!r} (must be http or https)")
+
+    host = parsed.hostname
+    if not host:
+        raise BrokerError("missing host in URL")
+
+    host_lower = host.lower()
+    if host_lower in _METADATA_HOSTS:
+        raise BrokerError(f"SSRF protection: access to metadata endpoint {host!r} is blocked")
+
+    try:
+        addr_infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise BrokerError(f"could not resolve host {host!r}: {exc}") from exc
+
+    for _, _, _, _, sockaddr in addr_infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+
+        if not allow_loopback and ip.is_loopback:
+            raise BrokerError(f"SSRF protection: loopback address {ip_str} is blocked")
+
+        if ip.is_link_local:
+            raise BrokerError(f"SSRF protection: link-local address {ip_str} is blocked")
+
+        if not allow_private and ip.is_private and not ip.is_loopback:
+            raise BrokerError(f"SSRF protection: private network address {ip_str} is blocked")
+
 
 
 class BrokerError(BatonError):
@@ -197,7 +250,10 @@ def request(
     body: bytes | None = None,
     json_body: Any | None = None,
     timeout: float = 30.0,
+    allow_private: bool = False,
+    allow_loopback: bool = True,
 ) -> HttpResponse:
+    validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
     lease = None
     if target.startswith("btn_"):
         lease = vault.resolve_lease(target)
