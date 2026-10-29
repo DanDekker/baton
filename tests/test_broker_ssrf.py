@@ -3,10 +3,10 @@ from urllib.parse import quote
 import httpx
 import pytest
 
-from baton import broker, cli
-from baton.catalog import build_credential
-from baton.models import Context
-from baton.vault import Vault
+from baton_auth import broker, cli
+from baton_auth.catalog import build_credential
+from baton_auth.models import Context
+from baton_auth.vault import Vault
 
 KEY = b"k" * 32
 

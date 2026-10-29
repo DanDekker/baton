@@ -37,4 +37,4 @@ The master seed is resolved in this order: `BATON_MASTER_KEY` → `BATON_PASSPHR
 | Passphrase derivation | Argon2id, 64 MiB memory, 3 iterations, parallelism 4 |
 | Record identity | Associated data `cred:<id>:<name>` |
 
-AWS SigV4 uses SHA-256 as required by that protocol. The implementation lives in [`src/baton/crypto.py`](../src/baton/crypto.py), [`src/baton/vault.py`](../src/baton/vault.py), and [`src/baton/broker.py`](../src/baton/broker.py).
+AWS SigV4 uses SHA-256 as required by that protocol. The implementation lives in [`src/baton_auth/crypto.py`](../src/baton_auth/crypto.py), [`src/baton_auth/vault.py`](../src/baton_auth/vault.py), and [`src/baton_auth/broker.py`](../src/baton_auth/broker.py).

@@ -15,8 +15,7 @@ baton keeps credentials on your machine and uses them on an agent's behalf. Thre
 Install with Python 3.10+ and [uv](https://docs.astral.sh/uv/), then add a GitHub token. A bare `--field token` prompts without showing the value or putting it in shell history.
 
 ```bash
-uv sync
-source .venv/bin/activate
+uv tool install git+https://github.com/DanDekker/baton.git
 
 baton cred add gh-work --provider github --field token
 baton ctx add work --cred gh-work
@@ -46,11 +45,13 @@ The first command prints a lease token. Give that token only to the agent that n
 
 Point the client to the installed server:
 
+Run `command -v baton-mcp` to find its absolute path for the configuration below.
+
 ```json
 {
   "mcpServers": {
     "baton": {
-      "command": "/absolute/path/to/baton/.venv/bin/baton-mcp"
+      "command": "/absolute/path/to/baton-mcp"
     }
   }
 }
@@ -104,3 +105,13 @@ OAuth refresh can rotate the refresh token and update the expiry from `expires_i
 | `baton --help` | See all commands and examples. |
 
 Use `--state-dir PATH` to choose another vault directory. `baton env --reveal` prints values for a human operator on explicit request; never use it in an agent transcript.
+
+## Work on the package
+
+The distribution name is `baton-auth` because `baton` is an unrelated PyPI project. The import name is `baton_auth`. This repository installs the `baton`, `baton-auth`, and `baton-mcp` commands. It is installable from GitHub; a PyPI release has not been published yet.
+
+```bash
+uv sync --extra dev
+.venv/bin/python -m pytest tests -q
+uv build
+```

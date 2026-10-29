@@ -16,7 +16,7 @@ import hmac
 import ipaddress
 import socket
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -165,7 +165,7 @@ def _sigv4(
 
     parsed = urlparse(url)
     host = parsed.netloc
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     amzdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = now.strftime("%Y%m%d")
 

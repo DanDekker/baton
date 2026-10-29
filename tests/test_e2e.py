@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from baton.catalog import build_credential
-from baton.models import Context
-from baton.runner import run
-from baton.vault import Vault
+from baton_auth.catalog import build_credential
+from baton_auth.models import Context
+from baton_auth.runner import run
+from baton_auth.vault import Vault
 
 MARK = "\u00abbaton:redacted\u00bb"
 TOKEN = "ghp_" + "Z" * 36
@@ -88,7 +88,7 @@ def test_mcp_stdio_handshake_and_tool_list(tmp_path):
     ]
     stdin = "\n".join(json.dumps(r) for r in requests) + "\n"
     proc = subprocess.run(
-        [sys.executable, "-m", "baton.mcp_server"],
+        [sys.executable, "-m", "baton_auth.mcp_server"],
         input=stdin,
         capture_output=True,
         text=True,

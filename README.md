@@ -14,11 +14,10 @@ Save a credential once, group it into a **context** such as `work`, then give an
 
 ## Try it
 
-Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install the package from GitHub:
 
 ```bash
-uv sync
-source .venv/bin/activate
+uv tool install git+https://github.com/DanDekker/baton.git
 
 baton cred add gh-work --provider github --field token  # prompts privately
 baton ctx add work --cred gh-work
@@ -34,7 +33,7 @@ Commands run with a temporary `HOME` containing that context's CLI settings. For
 {
   "mcpServers": {
     "baton": {
-      "command": "/absolute/path/to/baton/.venv/bin/baton-mcp"
+      "command": "/absolute/path/to/baton-mcp"
     }
   }
 }
@@ -44,5 +43,7 @@ Commands run with a temporary `HOME` containing that context's CLI settings. For
 
 - [User guide](https://github.com/DanDekker/baton/blob/master/docs/guide.md) — contexts, leases, providers, refresh, and MCP tools.
 - [Security and limits](https://github.com/DanDekker/baton/blob/master/docs/security.md) — what baton protects, how it stores secrets, and where its boundary ends.
+
+The distribution is named `baton-auth` and also provides the `baton-auth` command. The Python import is `baton_auth`.
 
 baton runs locally for one user on one machine. A temporary `HOME` keeps CLI configuration separate; it is not a full operating-system sandbox.

@@ -4,12 +4,12 @@ import time
 
 import pytest
 
-from baton import crypto
-from baton.catalog import PresetError, build_credential
-from baton.materialize import MaterializeError, apply, plan
-from baton.models import Context, Credential, LeaseError
-from baton.redact import Redactor
-from baton.vault import Vault
+from baton_auth import crypto
+from baton_auth.catalog import PresetError, build_credential
+from baton_auth.materialize import MaterializeError, apply, plan
+from baton_auth.models import Context, Credential, LeaseError
+from baton_auth.redact import Redactor
+from baton_auth.vault import Vault
 
 KEY = b"k" * 32
 

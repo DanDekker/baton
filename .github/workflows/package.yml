@@ -1,0 +1,40 @@
+name: Package
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+
+      - name: Install package and test dependencies
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+
+      - name: Test
+        run: uv run --no-sync pytest tests -q
+
+      - name: Build source archive and wheel
+        run: uv build
+
+      - name: Install and run the wheel in a clean environment
+        run: |
+          uv venv .package-venv --python ${{ matrix.python-version }}
+          uv pip install --python .package-venv/bin/python dist/*.whl
+          .package-venv/bin/python -m baton_auth --version
+          .package-venv/bin/baton-auth --version

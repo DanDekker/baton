@@ -4,11 +4,11 @@ import sys
 
 import pytest
 
-from baton import crypto, runner
-from baton.catalog import build_credential
-from baton.models import Context, LeaseError
-from baton.redact import Redactor
-from baton.vault import Vault
+from baton_auth import crypto, runner
+from baton_auth.catalog import build_credential
+from baton_auth.models import Context, LeaseError
+from baton_auth.redact import Redactor
+from baton_auth.vault import Vault
 
 KEY = b"k" * 32
 

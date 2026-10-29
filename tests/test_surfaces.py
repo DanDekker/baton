@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from baton import broker, runner
-from baton.catalog import build_credential
-from baton.mcp_server import build
-from baton.models import Context, LeaseError
-from baton.vault import Vault
+from baton_auth import broker, runner
+from baton_auth.catalog import build_credential
+from baton_auth.mcp_server import build
+from baton_auth.models import Context, LeaseError
+from baton_auth.vault import Vault
 
 KEY = b"k" * 32
 GH_TOKEN = "ghp_" + "x" * 36

@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-from baton.cli import build_parser, main
-from baton.vault import Vault
+from baton_auth.cli import build_parser, main
+from baton_auth.vault import Vault
 
 
 def _key() -> str:

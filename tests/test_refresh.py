@@ -8,13 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from baton import broker, runner
-from baton.catalog import build_credential
-from baton.cli import main
-from baton.mcp_server import build
-from baton.models import Context, Credential, RefreshError
-from baton.refresh import RefreshResult, register_refresh_provider
-from baton.vault import Vault
+from baton_auth import broker, runner
+from baton_auth.catalog import build_credential
+from baton_auth.cli import main
+from baton_auth.mcp_server import build
+from baton_auth.models import Context, Credential, RefreshError
+from baton_auth.refresh import RefreshResult, register_refresh_provider
+from baton_auth.vault import Vault
 
 KEY = b"k" * 32
 
