@@ -66,6 +66,7 @@ class Credential:
     materialize: list[dict[str, Any]] = field(default_factory=list)
     auth: dict[str, Any] = field(default_factory=dict)
     refresh: dict[str, Any] = field(default_factory=dict)
+    allowed_hosts: list[str] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
     expires_at: float | None = None
     notes: str = ""
@@ -91,6 +92,7 @@ class Credential:
             "expired": self.expired(),
             "refreshable": bool(self.refresh),
             "refresh_provider": self.refresh.get("provider") or self.refresh.get("type"),
+            "allowed_hosts": self.allowed_hosts,
             "notes": self.notes,
         }
 

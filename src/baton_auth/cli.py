@@ -141,6 +141,7 @@ def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
         env_map=_parse_env_pairs(args.env),
         refresh=refresh_config if refresh_config else None,
         auth=_parse_auth(args.auth, args.auth_field),
+        allowed_hosts=args.allow_host,
     )
     v.put_credential(cred)
     _out(f"stored {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
@@ -447,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--context", help="create or update this context with the credential")
     a.add_argument("--auth", help="HTTP auth: bearer, header:NAME, query:NAME, basic, or none")
     a.add_argument("--auth-field", help="secret field for bearer, header, or query auth (default: token)")
+    a.add_argument("--allow-host", action="append", help="restrict HTTP requests to this host or *.domain (repeatable)")
     a.add_argument("--expires-days", type=float)
     a.add_argument("--notes")
     a.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
