@@ -86,6 +86,73 @@ def hermes_config_path() -> Path:
     return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / "config.yaml"
 
 
+def claude_desktop_config_path() -> Path:
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Claude"
+            / "claude_desktop_config.json"
+        )
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "Claude" / "claude_desktop_config.json"
+
+
+def windsurf_config_path() -> Path:
+    return Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
+
+
+def zed_settings_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "zed" / "settings.json"
+
+
+def write_zed_config(path: str | Path, state_dir: str | None = None) -> Path:
+    """Merge baton into Zed's context_servers settings object."""
+    target = Path(path).expanduser()
+    current = _read_json_object(target)
+    _merge_server(current, "context_servers", mcp_entry(state_dir), target)
+    _atomic_write(target, json.dumps(current, indent=2) + "\n")
+    return target
+
+
+AGENT_INSTRUCTIONS = """## Baton Authentication Broker
+
+Use `baton` to run authenticated CLI commands or HTTP requests without reading raw secrets:
+
+- List available contexts: `baton ctx list --json`
+- Run a command in an isolated auth context: `baton run <context> -- <command> [args...]`
+- Make an authenticated HTTP request: `baton http <context> <url> [--method METHOD] [-H Header:Value]`
+- Mint a temporary lease for sub-agents: `baton lease new <context> --ttl 600 --uses 20`
+
+Never ask the operator to paste secrets into chat, and never run `baton env --reveal`.
+"""
+
+
+def write_agent_instructions(path: str | Path = "AGENTS.md") -> Path:
+    """Add or update the Baton section in an AGENTS.md / CLAUDE.md file."""
+    target = Path(path).expanduser()
+    marker = "## Baton Authentication Broker"
+    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    if marker in existing:
+        before, _, rest = existing.partition(marker)
+        next_heading = rest.find("\n## ")
+        after = rest[next_heading + 1 :] if next_heading != -1 else ""
+        updated = before.rstrip()
+        if updated:
+            updated += "\n\n"
+        updated += AGENT_INSTRUCTIONS.strip() + "\n"
+        if after:
+            updated += "\n" + after.lstrip("\n")
+    elif existing.strip():
+        updated = existing.rstrip() + "\n\n" + AGENT_INSTRUCTIONS.strip() + "\n"
+    else:
+        updated = AGENT_INSTRUCTIONS.strip() + "\n"
+    _atomic_write(target, updated)
+    return target
+
+
 def write_hermes_config(path: str | Path, state_dir: str | None = None) -> Path:
     """Round-trip Hermes YAML so comments and other settings survive setup."""
     from ruamel.yaml import YAML
