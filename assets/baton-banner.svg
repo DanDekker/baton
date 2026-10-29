@@ -3,11 +3,11 @@
   <desc id="desc">Auth contexts for agents. Pass the baton, never the secret.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#111111"/>
-      <stop offset="1" stop-color="#1d1d1d"/>
+      <stop offset="0" stop-color="#050505"/>
+      <stop offset="1" stop-color="#0d0d0d"/>
     </linearGradient>
     <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(1000 78) rotate(90) scale(260 350)">
-      <stop stop-color="#ffffff" stop-opacity=".07"/>
+      <stop stop-color="#ffffff" stop-opacity=".04"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="gold-body" x1="0" y1="0" x2="1" y2="0">

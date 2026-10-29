@@ -2,8 +2,6 @@
 
 <img src="https://raw.githubusercontent.com/DanDekker/baton/master/assets/baton-banner.svg" alt="baton — Pass the baton, never the secret." width="100%">
 
-<p><strong>Private credentials. Temporary access. Less to leak.</strong></p>
-
 <p><a href="#try-it">Try it</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/guide.md">User guide</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/security.md">Security</a></p>
 
 </div>
