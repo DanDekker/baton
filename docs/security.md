@@ -19,11 +19,13 @@ The master seed is resolved in this order: `BATON_MASTER_KEY` → `BATON_PASSPHR
 
 ## Where the boundary ends
 
-- baton is local to one user on one machine. It does not sync vaults between hosts.
+- The vault stays on one broker machine. Remote agents use a separate mutual-TLS API and do not receive the vault or its master key; see [remote pairing](remote.md).
+- Remote grants bind to a paired public-key identity, require acceptance, snapshot credential identities and host limits, and restrict HTTP methods and path subtrees. Delegated use charges every ancestor atomically; expiry, revocation, exhausted budgets, and revoked identities block descendants.
+- The remote API has no shell, credential-management, context-selection, or root-grant operation. Remote destinations must use HTTPS on port 443 and public addresses. Validated addresses are pinned for the outgoing connection; redirects and forwarding/routing header overrides are blocked.
 - A temporary `HOME` separates CLI settings; it is not an operating-system sandbox. Child processes keep their normal filesystem permissions.
-- A lease is a bearer token. Share it only with the intended agent and revoke it when it is no longer needed.
+- Existing unbound local leases are bearer tokens. Remote lease IDs are public handles that require the intended recipient's paired private key. Never copy a harness's private key to share a grant.
 - Redaction is based on known values and token patterns. It cannot undo a leak that happened through another tool or guarantee that every possible encoding is caught.
-- Hostnames are checked before HTTP connections. DNS can change between validation and connection; use network-level egress controls for untrusted destinations.
+- Local HTTP requests retain their existing hostname validation; DNS can change between validation and connection. Remote requests additionally pin the validated IP address. A revocation does not cancel a request that already started.
 - `baton env --reveal` prints values when an operator explicitly asks for them. MCP has no reveal tool.
 
 ## Cryptographic construction

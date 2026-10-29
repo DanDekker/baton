@@ -44,6 +44,8 @@ The first command prints a lease token. Give that token only to the agent that n
 
 ## Connect an MCP client
 
+For agents on other machines, follow [remote pairing and handoffs](remote.md), then run `baton setup --remote default --client CLIENT`. The commands below configure the trusted local administrative interface.
+
 Connect a local agent with one command:
 
 ```bash

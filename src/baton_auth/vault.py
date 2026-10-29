@@ -39,7 +39,7 @@ from .models import (
 KEYRING_SERVICE = "baton"
 ENV_MASTER_KEY = "BATON_MASTER_KEY"
 ENV_PASSPHRASE = "BATON_PASSPHRASE"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS audit(
   detail TEXT,
   prev_hash TEXT NOT NULL,
   hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agents(
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  public_key TEXT NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL
 );
 """
 
@@ -130,6 +137,10 @@ class _LockedConn:
     def commit(self) -> None:
         with self._lock:
             self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
 
     def close(self) -> None:
         with self._lock:
@@ -564,7 +575,20 @@ class Vault:
         services: list[str] | None = None,
         ttl: float = 900.0,
         max_uses: int | None = None,
+        *,
+        recipient: str | None = None,
+        delegatable: bool = False,
+        http_methods: list[str] | None = None,
+        path_prefixes: list[str] | None = None,
+        task: dict[str, Any] | None = None,
     ) -> Lease:
+        if recipient is not None:
+            from .delegation import issue
+            return issue(
+                self, context, recipient, services=services, ttl=ttl, max_uses=max_uses,
+                delegatable=delegatable, http_methods=http_methods,
+                path_prefixes=path_prefixes, task=task,
+            )
         resolved = self.resolve_context(context)
         context = resolved.name
         lease = Lease(
@@ -624,11 +648,20 @@ class Vault:
             issued_at=row["issued_at"],
             uses=row["uses"],
             revoked=bool(row["revoked"]),
+            **{key: spec[key] for key in (
+                "recipient", "parent_id", "delegatable", "credential_ids",
+                "host_policies", "http_methods", "path_prefixes", "accepted_at", "task",
+            ) if key in spec},
         )
 
     @_atomic
-    def resolve_lease(self, token: str, consume: bool = True) -> Lease:
+    def resolve_lease(
+        self, token: str, consume: bool = True, *, recipient: str | None = None,
+    ) -> Lease:
         """Verify signature, then DB state (revocation, TTL, use budget)."""
+        if recipient is not None:
+            from .delegation import resolve
+            return resolve(self, token, recipient, consume=consume)
         try:
             body, sig = token.strip().split(".", 1)
         except ValueError:
@@ -646,6 +679,8 @@ class Vault:
         if row is None:
             raise LeaseError("lease not found")
         lease = self._lease_from_row(row)
+        if lease.recipient is not None:
+            raise LeaseError("recipient-bound leases require an authenticated remote identity")
         lease.ensure_valid()
         if consume:
             cur = self._conn.execute(
@@ -691,27 +726,29 @@ class Vault:
         ok: bool,
         detail: dict[str, Any] | None = None,
     ) -> None:
-        ts = time.time()
-        detail = detail or {}
-        prev = self._last_hash()
-        entry = self._entry(ts, lease_id, subject, action, target, ok, detail)
-        h = crypto.chain(bytes.fromhex(prev), entry).hex()
-        self._conn.execute(
-            "INSERT INTO audit(ts,lease_id,subject,action,target,ok,detail,prev_hash,hash)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                ts,
-                lease_id,
-                subject,
-                action,
-                target,
-                int(ok),
-                json.dumps(detail, sort_keys=True, separators=(",", ":")),
-                prev,
-                h,
-            ),
-        )
-        self._conn.commit()
+        from .delegation import transaction
+
+        with transaction(self):
+            ts = time.time()
+            detail = detail or {}
+            prev = self._last_hash()
+            entry = self._entry(ts, lease_id, subject, action, target, ok, detail)
+            h = crypto.chain(bytes.fromhex(prev), entry).hex()
+            self._conn.execute(
+                "INSERT INTO audit(ts,lease_id,subject,action,target,ok,detail,prev_hash,hash)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    ts,
+                    lease_id,
+                    subject,
+                    action,
+                    target,
+                    int(ok),
+                    json.dumps(detail, sort_keys=True, separators=(",", ":")),
+                    prev,
+                    h,
+                ),
+            )
 
     def audit_tail(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._conn.execute(

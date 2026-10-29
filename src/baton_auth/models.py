@@ -129,6 +129,15 @@ class Lease:
     issued_at: float = field(default_factory=_now)
     uses: int = 0
     revoked: bool = False
+    recipient: str | None = None
+    parent_id: str | None = None
+    delegatable: bool = False
+    credential_ids: dict[str, str] = field(default_factory=dict)
+    host_policies: dict[str, list[str]] = field(default_factory=dict)
+    http_methods: list[str] = field(default_factory=list)
+    path_prefixes: list[str] = field(default_factory=list)
+    accepted_at: float | None = None
+    task: dict[str, Any] = field(default_factory=dict)
 
     @property
     def expires_at(self) -> float:
@@ -159,4 +168,11 @@ class Lease:
             "max_uses": self.max_uses,
             "uses": self.uses,
             "revoked": self.revoked,
+            "recipient": self.recipient,
+            "parent_id": self.parent_id,
+            "delegatable": self.delegatable,
+            "http_methods": self.http_methods,
+            "path_prefixes": self.path_prefixes,
+            "accepted_at": self.accepted_at,
+            "task": self.task,
         }
