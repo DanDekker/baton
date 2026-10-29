@@ -1,11 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [project]
 name = "baton-auth"
 description = "Local authentication broker for AI agents and MCP tools"
-version = "0.1.4"
+dynamic = ["version"]
 requires-python = ">=3.10"
 readme = "README.md"
 keywords = ["AI agents", "authentication", "MCP", "credential management", "secrets management"]
@@ -42,6 +42,15 @@ dev = ["pytest>=8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/baton_auth"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+parentdir_prefix_version = "baton-"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

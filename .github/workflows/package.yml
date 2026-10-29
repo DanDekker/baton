@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# Keep publishing runs in order, including retries, without dropping queued merges.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('package-pr-{0}', github.event.pull_request.number) || 'package-publish' }}
+  queue: max
+
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
@@ -20,6 +25,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
@@ -48,31 +55,81 @@ jobs:
           .package-venv/bin/python -c 'import json; from pathlib import Path; from ruamel.yaml import YAML; assert json.loads(Path(".package-venv/muse-settings.json").read_text())["mcpServers"]["baton"]["type"] == "stdio"; assert YAML().load(Path(".package-venv/hermes-config.yaml").read_text())["mcp_servers"]["baton"]["command"]'
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: test-and-build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      latest: ${{ steps.version.outputs.latest }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.5"
 
-      - name: Check that the tag matches the package version
-        run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - name: Select the release version
+        id: version
+        run: python3 .github/scripts/release_version.py --ref "$GITHUB_REF"
 
-      - name: Build release files
-        run: |
-          uv build --no-sources
-          sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
-
-      - name: Publish GitHub release
+      - name: Reuse complete release artifacts on retries
+        id: existing
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft,assets > "$RUNNER_TEMP/release.json"; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            if jq -e --arg wheel "baton_auth-$RELEASE_VERSION-py3-none-any.whl" --arg source "baton_auth-$RELEASE_VERSION.tar.gz" \
+              '[.assets[].name] | contains([$wheel, $source, "SHA256SUMS"])' "$RUNNER_TEMP/release.json"; then
+              gh release download "$RELEASE_TAG" --dir dist --pattern '*.whl' --pattern '*.tar.gz' --pattern SHA256SUMS
+              (cd dist && sha256sum --check SHA256SUMS)
+              echo 'reuse=true' >> "$GITHUB_OUTPUT"
+            else
+              jq -e '.isDraft' "$RUNNER_TEMP/release.json"
+            fi
+          fi
+
+      - name: Build release files
+        if: steps.existing.outputs.reuse != 'true'
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          uv build --no-sources
+          (cd dist && sha256sum -- *.whl *.tar.gz > SHA256SUMS)
+
+      - name: Verify the version in the release wheel
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          uv venv .release-venv --python 3.12
+          uv pip install --python .release-venv/bin/python dist/*.whl
+          .release-venv/bin/python -c 'import os, baton_auth, importlib.metadata; assert baton_auth.__version__ == importlib.metadata.version("baton-auth") == os.environ["RELEASE_VERSION"]'
+          .release-venv/bin/baton --version
+
+      - name: Push the immutable version tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Stage the GitHub release
+        if: steps.existing.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_EXISTS: ${{ steps.existing.outputs.exists }}
+        run: |
+          if test "$RELEASE_EXISTS" = true; then
+            gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --draft --verify-tag --generate-notes
+          fi
 
       - name: Save distributions for PyPI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -84,7 +141,6 @@ jobs:
           if-no-files-found: error
 
   publish-pypi:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: release
     runs-on: ubuntu-latest
     environment: pypi
@@ -104,4 +160,18 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*.whl dist/*.tar.gz
+
+  publish-github:
+    needs: [release, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub release after PyPI succeeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_LATEST: ${{ needs.release.outputs.latest }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest="$RELEASE_LATEST"

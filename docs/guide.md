@@ -121,7 +121,11 @@ Use `--state-dir PATH` to choose another vault directory. `baton env --reveal` p
 
 ## Work on the package
 
-The [PyPI package](https://pypi.org/project/baton-auth/) is named `baton-auth` because `baton` is an unrelated project. The import name is `baton_auth`. It installs the `baton`, `baton-auth`, and `baton-mcp` commands. Version tags build and publish the package through GitHub Actions.
+The [PyPI package](https://pypi.org/project/baton-auth/) is named `baton-auth` because `baton` is an unrelated project. The import name is `baton_auth`. It installs the `baton`, `baton-auth`, and `baton-mcp` commands.
+
+Every merge to `main` runs the tests and package checks on Python 3.10, 3.12, and 3.14, then automatically creates the next patch version, publishes to PyPI, and publishes a GitHub release with the same files and checksums. Publishing runs are queued. Failed runs can be retried: an existing version tag and complete release files are reused. The GitHub release stays a draft until PyPI succeeds.
+
+Versions come from Git tags; `main` does not need version-bump commits. A clean release tag builds its exact version, while untagged development commits get a development version. Fetch tags when building a Git checkout. To choose a new major or minor version, push an explicit `vMAJOR.MINOR.PATCH` tag on `main`; the next automatic release increments its patch number. The Package workflow can also be dispatched on `main` to retry publishing. Existing installations update with `uv tool upgrade baton-auth`.
 
 ```bash
 uv sync --extra dev
