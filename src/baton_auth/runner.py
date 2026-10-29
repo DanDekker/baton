@@ -55,14 +55,22 @@ class RunResult:
         }
 
 
-def _resolve(vault: Vault, target: str, service: str | None) -> tuple[str, str | None]:
+def _resolve(
+    vault: Vault, target: str, service: str | None
+) -> tuple[str, str | None, list[str] | None]:
     """Accept either a context name or a lease token."""
     if target.startswith("btn_"):
         lease = vault.resolve_lease(target)  # raises LeaseError
-        if not lease.allows(service):
+        if service is not None and not lease.allows(service):
             raise LeaseError(f"lease does not grant {service!r}")
-        return lease.context, lease.id
-    return target, None
+        if service is not None:
+            allowed = [service]
+        elif lease.services and "*" not in lease.services:
+            allowed = list(lease.services)
+        else:
+            allowed = None
+        return lease.context, lease.id, allowed
+    return target, None, [service] if service else None
 
 
 def run(
@@ -78,8 +86,8 @@ def run(
 ) -> RunResult:
     if not argv:
         raise RunError("empty command")
-    context_name, lease_id = _resolve(vault, target, service)
-    p = plan(vault, context_name)
+    context_name, lease_id, allowed_services = _resolve(vault, target, service)
+    p = plan(vault, context_name, allowed_services=allowed_services)
 
     sandbox = vault.state_dir / "run" / f"{context_name}-{uuid.uuid4().hex[:12]}"
     sandbox.mkdir(parents=True, exist_ok=True)

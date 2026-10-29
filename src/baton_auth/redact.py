@@ -7,8 +7,10 @@ hand the model its own credentials.
 
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Iterable
+from urllib.parse import quote
 
 # Provider token shapes worth catching even when we did not mint them.
 _PATTERNS: list[tuple[str, tuple[str, ...], re.Pattern[str]]] = [
@@ -59,8 +61,19 @@ class Redactor:
     """Replaces known secrets, then provider-shaped tokens."""
 
     def __init__(self, secrets: Iterable[str] = (), marker: str = "«baton:redacted»"):
-        values = [s for s in set(secrets) if len(s) >= MIN_LEN]
-        values.sort(key=len, reverse=True)
+        expanded: set[str] = set()
+        for s in secrets:
+            if not isinstance(s, str) or len(s) < MIN_LEN:
+                continue
+            expanded.add(s)
+            url_enc = quote(s, safe="")
+            if len(url_enc) >= MIN_LEN:
+                expanded.add(url_enc)
+            if len(s) >= 12:
+                b64 = base64.b64encode(s.encode()).decode()
+                expanded.add(b64)
+                expanded.add(b64.rstrip("="))
+        values = sorted(expanded, key=len, reverse=True)
         self._values = values
         self._marker = marker
         if values:

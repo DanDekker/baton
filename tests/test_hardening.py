@@ -169,3 +169,49 @@ def test_runner_host_env_sanitization(vault, monkeypatch):
     assert "SAFE=keep_me" in res.stdout
     assert "LD=NONE" in res.stdout
     assert "PY=NONE" in res.stdout
+
+
+def test_scoped_lease_materializes_only_permitted_service(vault):
+    gh = build_credential("gh", "github", {"token": "ghp_" + "a" * 36})
+    aws = build_credential(
+        "aws",
+        "aws",
+        {"access_key_id": "AKIA" + "B" * 16, "secret_access_key": "s" * 40},
+    )
+    vault.put_credential(gh)
+    vault.put_credential(aws)
+    vault.put_context(Context(name="multi", credentials=["gh", "aws"]))
+
+    # Lease restricted to github must not expose AWS credentials in the sandbox
+    lease = vault.issue_lease("multi", "agent", services=["github"], ttl=60)
+    res = runner.run(
+        vault,
+        lease.token,
+        ["sh", "-c", "test -n \"$GH_TOKEN\" && echo gh_ok; echo aws=${AWS_SECRET_ACCESS_KEY:-absent}"],
+    )
+    assert res.exit_code == 0
+    assert "gh_ok" in res.stdout
+    assert "aws=absent" in res.stdout
+
+
+def test_redactor_catches_url_and_base64_encoded_secrets():
+    import base64
+    from urllib.parse import quote
+
+    secret = "my_high_entropy_secret_value+123/456="
+    r = Redactor([secret])
+    b64 = base64.b64encode(secret.encode()).decode()
+    url_enc = quote(secret, safe="")
+    assert b64 not in r(f"auth: {b64}")
+    assert url_enc not in r(f"url: {url_enc}")
+
+
+def test_materialize_rejects_path_traversal(vault, tmp_path):
+    from baton_auth.materialize import FileSpec, MaterializeError, Plan, apply
+
+    bad_plan = Plan(
+        context=Context(name="bad"),
+        files=[FileSpec(path="../../escape.txt", content="nope")],
+    )
+    with pytest.raises(MaterializeError, match="unsafe path"):
+        apply(bad_plan, tmp_path / "sandbox")

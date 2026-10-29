@@ -57,6 +57,16 @@ def refresh_oauth2(cred: Credential, config: dict[str, Any]) -> RefreshResult:
     token_url = config.get("token_url")
     if not token_url:
         raise RefreshError(f"credential {cred.name}: oauth2 refresh missing 'token_url'")
+    from .broker import BrokerError, validate_target_url
+
+    try:
+        validate_target_url(
+            str(token_url),
+            allow_private=bool(config.get("allow_private", False)),
+            allow_loopback=bool(config.get("allow_loopback", True)),
+        )
+    except BrokerError as exc:
+        raise RefreshError(f"credential {cred.name}: invalid token_url: {exc}") from exc
 
     rt_field = str(config.get("refresh_token_field", "refresh_token"))
     access_field = str(config.get("access_token_field", "token"))

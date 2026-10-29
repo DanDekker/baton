@@ -45,7 +45,10 @@ _SAFE_HEADERS = {
 # Cloud metadata and internal link-local endpoints blocked by default
 _METADATA_HOSTS = frozenset({
     "169.254.169.254",
+    "169.254.170.2",
+    "100.100.100.200",
     "metadata.google.internal",
+    "metadata.azure.com",
     "metadata.local",
     "fd00:ec2::254",
 })
@@ -82,6 +85,15 @@ def validate_target_url(
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+            ip_str = str(ip)
+
+        if ip_str in _METADATA_HOSTS:
+            raise BrokerError(f"SSRF protection: access to metadata endpoint {ip_str} is blocked")
+
+        if ip.is_unspecified or ip.is_multicast:
+            raise BrokerError(f"SSRF protection: non-unicast address {ip_str} is blocked")
 
         if not allow_loopback and ip.is_loopback:
             raise BrokerError(f"SSRF protection: loopback address {ip_str} is blocked")
@@ -310,7 +322,7 @@ def request(
     lease = None
     if target.startswith("btn_"):
         lease = vault.resolve_lease(target)
-        if not lease.allows(service):
+        if service is not None and not lease.allows(service):
             raise LeaseError(f"lease does not grant {service!r}")
         context_name = lease.context
     else:
@@ -319,7 +331,18 @@ def request(
     ctx = vault.get_context(context_name)
     if not ctx.credentials:
         raise BrokerError(f"context {context_name} has no credentials")
-    cred_name = _pick_credential_name(vault, ctx.credentials, service)
+    if lease is not None and lease.services and "*" not in lease.services:
+        allowed_set = set(lease.services)
+        candidates = [
+            name
+            for name in ctx.credentials
+            if name in allowed_set or vault.get_credential_provider(name) in allowed_set
+        ]
+        if not candidates:
+            raise LeaseError(f"lease does not grant any service in context {context_name!r}")
+    else:
+        candidates = ctx.credentials
+    cred_name = _pick_credential_name(vault, candidates, service)
     cred = vault.get_credential(cred_name, auto_refresh=True)
     validate_credential_host(cred, url, allow_loopback=allow_loopback)
 
