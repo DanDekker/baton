@@ -12,7 +12,7 @@
 
 **baton is a local authentication broker for AI agents and MCP tools.** It lets an agent use your GitHub, cloud, or API credentials without putting the secret value into its chat or tool output.
 
-Save a credential once, group it into a **context** such as `work`, then give an agent a **lease**: a temporary pass that can expire or be revoked. baton uses the credential for a command or HTTP request and hides known secrets in the result.
+Save a credential once, then let an agent use it directly or through a **context** or expiring **lease**. baton runs the command or HTTP request with the credential and hides known secrets in the result.
 
 ## Try it
 
@@ -21,19 +21,18 @@ Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install [baton-auth 
 ```bash
 uv tool install baton-auth
 
-baton cred add gh-work --provider github --field token --context work
-# or import an existing local login:
-baton cred import github --context work
+baton import                     # import existing local logins (gh, aws, npm, ...)
+# or prompt privately for a single service:
+baton add github
 
-baton run work -- gh api /user
-baton http work https://api.github.com/user
-baton lease new work --ttl 600 --uses 20
-baton setup  # prints MCP config for an agent client
+baton run -- gh api /user
+baton http https://api.github.com/user
+baton setup --auto               # connect installed MCP clients
 ```
 
-The bare `--field token` prompts privately (or reads from piped stdin). Commands run in your working directory with a temporary `HOME` containing only that context's CLI settings.
+`baton add SERVICE` prompts privately for required fields (or reads from piped stdin). Commands run in your working directory with a temporary `HOME` containing only that context's CLI settings.
 
-`baton setup --client CLIENT` connects Codex, Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Zed, Muse Code, Hermes Agent, or writes `AGENTS.md` instructions. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
+`baton setup --auto` configures detected MCP clients (`cursor`, `claude-desktop`, `windsurf`, `zed`, `vscode`, `muse-code`, `hermes-agent`), or pass `--client CLIENT` (`codex`, `claude-code`, `agents-md`, ...). `baton setup` prints portable MCP config JSON. Agents with command access can use `baton run` or `baton http`.
 
 ## Cryptography at a glance
 

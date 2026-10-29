@@ -12,25 +12,25 @@ baton keeps credentials on your machine and uses them on an agent's behalf. Thre
 
 ## Set up a context
 
-Install with Python 3.10+ and [uv](https://docs.astral.sh/uv/), then add a GitHub token. A bare `--field token` prompts without showing the value or putting it in shell history.
+Install with Python 3.10+ and [uv](https://docs.astral.sh/uv/), then import your existing logins or add a token. `baton add SERVICE` prompts privately for required fields without putting secrets in shell history.
 
 ```bash
 uv tool install baton-auth
 
-baton cred add gh-work --provider github --field token --context work
-# or import your existing local gh login:
-baton cred import github --context work
-baton ctx list
+baton import                # auto-import local logins (gh, aws, npm, kube, ...)
+baton add github            # or prompt privately for a single service
+baton list
 ```
 
-Run a command or send an HTTP request with the `work` context:
+Run a command or send an HTTP request using a credential name, a context name, or the default context:
 
 ```bash
-baton run work -- gh api /user
-baton http work https://api.github.com/user -H "Accept: application/vnd.github+json"
+baton run -- gh api /user
+baton run github -- gh api /user
+baton http https://api.github.com/user -H "Accept: application/vnd.github+json"
 ```
 
-For `baton run`, put baton options before the context name and the child command after `--`. The child gets a temporary `HOME` with this context's CLI configuration. Output is checked for known secrets before it is returned.
+When a context has multiple credentials, `baton http` automatically selects the credential whose allowed host matches the request URL. For `baton run`, put baton options before `--` and the child command after `--`. The child runs in your current working directory (or `--cwd PATH`) with a temporary `HOME` containing only the permitted CLI configuration. Output is checked for known secrets (including URL- and base64-encoded forms) before it is returned.
 
 ## Give an agent temporary access
 
