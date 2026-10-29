@@ -95,6 +95,28 @@ def test_run_preserves_caller_cwd_and_validates_explicit_cwd(vault, tmp_path):
         runner.run(vault, "ghctx", ["true"], cwd=str(tmp_path / "missing-dir"))
 
 
+def test_direct_credential_target_and_default_resolution(tmp_path, echo_server):
+    v = Vault(master_key=KEY, state_dir=tmp_path / "solo-state")
+    try:
+        v.put_credential(build_credential("github", "github", {"token": GH_TOKEN}))
+        # No context created: credential name works directly for run, http, and lease
+        res = runner.run(v, "github", ["sh", "-c", "test -n \"$GH_TOKEN\" && echo ok"])
+        assert res.exit_code == 0 and "ok" in res.stdout
+
+        # Omitted target resolves the sole credential automatically
+        res_default = runner.run(v, None, ["sh", "-c", "test -n \"$GH_TOKEN\" && echo solo_ok"])
+        assert res_default.exit_code == 0 and "solo_ok" in res_default.stdout
+
+        resp = broker.request(v, "github", "GET", echo_server)
+        assert resp.status == 200
+
+        lease = v.issue_lease("github", "agent", ttl=60)
+        res_lease = runner.run(v, lease.token, ["sh", "-c", "echo lease_ok"])
+        assert res_lease.exit_code == 0 and "lease_ok" in res_lease.stdout
+    finally:
+        v.close()
+
+
 # ------------------------------------------------------------------ broker
 class _EchoHeaders(BaseHTTPRequestHandler):
     seen: dict[str, str] = {}
