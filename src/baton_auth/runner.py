@@ -107,10 +107,16 @@ def run(
                 del env[var]
 
         argv_list = list(argv)
+        run_cwd: str | None = None
+        if cwd is not None:
+            resolved_cwd = Path(cwd).expanduser()
+            if not resolved_cwd.is_dir():
+                raise RunError(f"working directory not found: {cwd}")
+            run_cwd = str(resolved_cwd)
         try:
             proc = subprocess.run(
                 argv_list,
-                cwd=cwd or str(sandbox),
+                cwd=run_cwd,
                 env=env,
                 input=stdin,
                 capture_output=True,

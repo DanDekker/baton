@@ -406,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  baton cred add gh-work --provider github --field token --context work\n"
             "  baton run work -- gh api /user\n"
             "  baton setup  # connect an MCP client\n"
-            "Guide: https://github.com/DanDekker/baton/blob/master/docs/guide.md"
+            "Guide: https://github.com/DanDekker/baton/blob/main/docs/guide.md"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
