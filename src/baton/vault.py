@@ -162,16 +162,20 @@ class Vault:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         self._conn = _LockedConn(conn, self._lock)
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
+        self._conn.execute("PRAGMA busy_timeout=5000;")
+        self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         os.chmod(self.db_path, 0o600)
 
         self.mode = "unknown"
-        self._master = self._resolve_master_key(master_key, passphrase)
-        self._k_storage = crypto.subkey(self._master, "storage")
-        self._k_lease = crypto.subkey(self._master, "lease")
-        self._k_audit = crypto.subkey(self._master, "audit")
-        self._k_commit = crypto.subkey(self._master, "commit")
+        self._master = bytearray(self._resolve_master_key(master_key, passphrase))
+        self._k_storage = bytearray(crypto.subkey(self._master, "storage"))
+        self._k_lease = bytearray(crypto.subkey(self._master, "lease"))
+        self._k_audit = bytearray(crypto.subkey(self._master, "audit"))
+        self._k_commit = bytearray(crypto.subkey(self._master, "commit"))
         self._set_meta("schema_version", str(SCHEMA_VERSION))
 
     # ------------------------------------------------------------- lifecycle
@@ -183,6 +187,15 @@ class Vault:
 
     def close(self) -> None:
         self._conn.close()
+        for k in (
+            getattr(self, "_master", None),
+            getattr(self, "_k_storage", None),
+            getattr(self, "_k_lease", None),
+            getattr(self, "_k_audit", None),
+            getattr(self, "_k_commit", None),
+        ):
+            if k is not None:
+                crypto.zeroize(k)
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -578,8 +591,19 @@ class Vault:
         lease = self._lease_from_row(row)
         lease.ensure_valid()
         if consume:
-            self._conn.execute("UPDATE leases SET uses=uses+1 WHERE id=?", (lease.id,))
+            cur = self._conn.execute(
+                "UPDATE leases SET uses=uses+1 WHERE id=? AND revoked=0 "
+                "AND (max_uses IS NULL OR uses < max_uses)",
+                (lease.id,),
+            )
             self._conn.commit()
+            if cur.rowcount == 0:
+                fresh = self._conn.execute(
+                    "SELECT * FROM leases WHERE id=?", (lease.id,)
+                ).fetchone()
+                if fresh is not None:
+                    self._lease_from_row(fresh).ensure_valid()
+                raise LeaseError("lease could not be consumed")
             lease.uses += 1
         return lease
 
