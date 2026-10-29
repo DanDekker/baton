@@ -80,6 +80,29 @@ def cmd_status(v: Vault, _args: argparse.Namespace) -> int:
 
 def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
     values = _parse_fields(args.field, args.field_file)
+    refresh_config: dict[str, Any] = {}
+    if (
+        getattr(args, "refresh_provider", None)
+        or getattr(args, "refresh_token_url", None)
+        or getattr(args, "refresh_cmd", None)
+    ):
+        p = args.refresh_provider or ("oauth2" if args.refresh_token_url else "exec")
+        refresh_config["provider"] = p
+        if getattr(args, "refresh_token_url", None):
+            refresh_config["token_url"] = args.refresh_token_url
+        if getattr(args, "refresh_client_id", None):
+            refresh_config["client_id"] = args.refresh_client_id
+        if getattr(args, "refresh_client_secret", None):
+            refresh_config["client_secret"] = args.refresh_client_secret
+        if getattr(args, "refresh_token", None):
+            refresh_config["refresh_token"] = args.refresh_token
+        if getattr(args, "refresh_scope", None):
+            refresh_config["scope"] = args.refresh_scope
+        if getattr(args, "refresh_cmd", None):
+            refresh_config["argv"] = args.refresh_cmd
+        if getattr(args, "refresh_ttl", None):
+            refresh_config["ttl"] = args.refresh_ttl
+
     cred = catalog.build_credential(
         args.name,
         args.provider,
@@ -87,9 +110,19 @@ def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
         expires_at=time.time() + args.expires_days * 86400 if args.expires_days else None,
         notes=args.notes or "",
         env_map=_parse_env_pairs(args.env),
+        refresh=refresh_config if refresh_config else None,
     )
     v.put_credential(cred)
     _out(f"stored {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
+    return 0
+
+
+def cmd_cred_refresh(v: Vault, args: argparse.Namespace) -> int:
+    cred, did_refresh = v.refresh_credential(args.name, force=args.force, skew=args.skew)
+    if did_refresh:
+        _out(f"refreshed {cred.name} ({cred.provider}), expires: {_fmt_expiry(cred.expires_at)}")
+    else:
+        _out(f"{cred.name} is still fresh, expires: {_fmt_expiry(cred.expires_at)}")
     return 0
 
 
@@ -100,10 +133,16 @@ def cmd_cred_list(v: Vault, args: argparse.Namespace) -> int:
         return 0
     _table(
         [
-            [r["name"], r["provider"], ",".join(r["fields"]), _fmt_expiry(r["expires_at"])]
+            [
+                r["name"],
+                r["provider"],
+                ",".join(r["fields"]),
+                _fmt_expiry(r["expires_at"]),
+                r.get("refresh_provider") or ("yes" if r.get("refreshable") else "-"),
+            ]
             for r in rows
         ],
-        ["NAME", "PROVIDER", "FIELDS", "EXPIRES"],
+        ["NAME", "PROVIDER", "FIELDS", "EXPIRES", "REFRESH"],
     )
     return 0
 
@@ -280,7 +319,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--env", action="append", help="NAME={field} extra env mapping")
     a.add_argument("--expires-days", type=float)
     a.add_argument("--notes")
+    a.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
+    a.add_argument("--refresh-token-url", help="OAuth2 token endpoint URL")
+    a.add_argument("--refresh-client-id", help="OAuth2 client ID")
+    a.add_argument("--refresh-client-secret", help="OAuth2 client secret")
+    a.add_argument("--refresh-token", help="OAuth2 refresh token override")
+    a.add_argument("--refresh-scope", help="OAuth2 scope")
+    a.add_argument("--refresh-cmd", help="exec refresh command string")
+    a.add_argument("--refresh-ttl", type=float, help="TTL in seconds for exec refresh")
     cred_sub.add_parser("list", parents=[common])
+    crf = cred_sub.add_parser("refresh", parents=[common], help="refresh a credential")
+    crf.add_argument("name")
+    crf.add_argument("--force", action="store_true", help="refresh even if not expired")
+    crf.add_argument("--skew", type=float, default=60.0, help="expiry skew in seconds")
     r = cred_sub.add_parser("rm", parents=[common])
     r.add_argument("name")
 
@@ -343,6 +394,7 @@ _HANDLERS = {
     ("info", None): cmd_info,
     ("cred", "add"): cmd_cred_add,
     ("cred", "list"): cmd_cred_list,
+    ("cred", "refresh"): cmd_cred_refresh,
     ("cred", "rm"): cmd_cred_rm,
     ("ctx", "add"): cmd_ctx_add,
     ("ctx", "list"): cmd_ctx_list,

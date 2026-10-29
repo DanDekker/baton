@@ -218,6 +218,7 @@ def build_credential(
     expires_at: float | None = None,
     notes: str = "",
     env_map: dict[str, str] | None = None,
+    refresh: dict[str, Any] | None = None,
 ) -> Credential:
     """Validate field coverage and assemble a Credential from a preset."""
     p = preset(provider)
@@ -241,6 +242,7 @@ def build_credential(
         secret={k: v for k, v in values.items() if v},
         materialize=steps,
         auth=dict(p.auth),
+        refresh=dict(refresh or {}),
         expires_at=expires_at,
         notes=notes,
         meta={"preset": provider},
