@@ -16,10 +16,10 @@ Save a credential once, group it into a **context** such as `work`, then give an
 
 ## Try it
 
-Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install the package from GitHub:
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install [baton-auth from PyPI](https://pypi.org/project/baton-auth/):
 
 ```bash
-uv tool install git+https://github.com/DanDekker/baton.git
+uv tool install baton-auth
 
 baton cred add gh-work --provider github --field token --context work
 
