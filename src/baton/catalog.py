@@ -35,7 +35,8 @@ class Preset:
         return self.fields + self.optional
 
 
-_GH_HOSTS = """github.com:\n    oauth_token: {token}\n    user: {user}\n    git_protocol: https\n"""
+_GH_HOSTS = "github.com:\n    oauth_token: {token}\n    git_protocol: https\n"
+_GH_HOSTS_USER = "    user: {user}\n"
 
 PRESETS: dict[str, Preset] = {
     "aws": Preset(
@@ -98,6 +99,12 @@ PRESETS: dict[str, Preset] = {
                 "map": {"GH_TOKEN": "{token}", "GITHUB_TOKEN": "{token}"},
             },
             {"kind": "file", "path": ".config/gh/hosts.yml", "template": _GH_HOSTS},
+            {
+                "kind": "file",
+                "path": ".config/gh/hosts.yml",
+                "optional": True,
+                "template": _GH_HOSTS_USER,
+            },
         ),
         auth={"scheme": "bearer", "field": "token"},
         hint="GitHub PAT (ghp_/github_pat_) or fine-grained token",

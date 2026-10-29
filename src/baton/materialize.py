@@ -155,7 +155,7 @@ def apply(plan_obj: Plan, home: Path) -> dict[str, str]:
     home.mkdir(parents=True, exist_ok=True)
     os_home = str(home)
 
-    for spec in plan_obj.files:
+    for spec in _merge_files(plan_obj.files):
         target = home / spec.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(spec.content)
@@ -190,6 +190,24 @@ def apply(plan_obj: Plan, home: Path) -> dict[str, str]:
             continue
         dst.write_text(src.read_text(errors="replace"))
     return env
+
+
+def _merge_files(specs: list[FileSpec]) -> list[FileSpec]:
+    """Collapse steps that target the same path into one file, in order.
+
+    This is what lets a provider append an *optional* line (e.g. `user:` in the
+    gh hosts.yml) without needing a second template for the whole file.
+    """
+    merged: dict[str, FileSpec] = {}
+    for spec in specs:
+        prev = merged.get(spec.path)
+        if prev is None:
+            merged[spec.path] = spec
+        else:
+            merged[spec.path] = FileSpec(
+                path=spec.path, content=prev.content + spec.content, mode=spec.mode
+            )
+    return list(merged.values())
 
 
 def scrub(env: dict[str, str]) -> dict[str, str]:
