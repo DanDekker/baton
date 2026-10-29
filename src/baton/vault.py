@@ -1,19 +1,19 @@
-"""Encrypted-at-rest store: SQLite + AES-GCM envelope, key in the OS keyring.
+"""Encrypted-at-rest store: SQLite + committed AEAD envelope, BLAKE3 everywhere.
 
-Design notes:
-  * Secrets are encrypted per record with AAD = record identity, so ciphertext
-    cannot be swapped between records.
-  * The master key lives in the OS keyring (macOS Keychain / Secret Service /
-    Windows Credential Locker). Headless hosts fall back to BATON_MASTER_KEY,
-    then to a 0600 keyfile next to the DB. The DB alone is never enough.
-  * Leases store only a hash of their token; the token itself is never at rest.
+See `baton.crypto` for the primitive choices. This module is only storage policy:
+
+  * one subkey per purpose (storage / lease / audit / commit), derived from a
+    32-byte master seed;
+  * AAD = `cred:<id>:<name>`, so a ciphertext cannot be relocated between
+    records, let alone between databases;
+  * an append-only BLAKE3 hash chain over the audit log, so credential use is
+    tamper-evident;
+  * master seed from BATON_MASTER_KEY, then passphrase+Argon2id, then the OS
+    keyring, then a 0600 keyfile. The database alone is never sufficient.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import os
 import secrets
@@ -23,8 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
+from . import crypto
 from .models import (
     Context,
     Credential,
@@ -37,6 +36,8 @@ from .models import (
 
 KEYRING_SERVICE = "baton"
 ENV_MASTER_KEY = "BATON_MASTER_KEY"
+ENV_PASSPHRASE = "BATON_PASSPHRASE"
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -44,9 +45,8 @@ CREATE TABLE IF NOT EXISTS credentials(
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   provider TEXT NOT NULL,
-  nonce BLOB NOT NULL,
-  blob BLOB NOT NULL,
-  meta TEXT NOT NULL,          -- public, unencrypted (expiry, scopes, notes)
+  envelope BLOB NOT NULL,      -- committed AEAD envelope of the secret payload
+  meta TEXT NOT NULL,          -- public: fields, expiry, scopes, notes, plan
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS contexts(
 );
 CREATE TABLE IF NOT EXISTS leases(
   id TEXT PRIMARY KEY,
-  token_hash TEXT UNIQUE NOT NULL,
+  token_hash TEXT UNIQUE NOT NULL,   -- BLAKE3(token); token itself never at rest
   context_name TEXT NOT NULL,
   subject TEXT NOT NULL,
   spec TEXT NOT NULL,
@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS audit(
   action TEXT NOT NULL,
   target TEXT,
   ok INTEGER NOT NULL,
-  detail TEXT
+  detail TEXT,
+  prev_hash TEXT NOT NULL,
+  hash TEXT NOT NULL
 );
 """
 
@@ -103,127 +105,166 @@ def _hardened_write(path: Path, data: bytes) -> None:
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
-def _load_master_key(state_dir: Path, create: bool = True) -> bytes:
-    env_key = os.environ.get(ENV_MASTER_KEY)
-    if env_key:
-        raw = base64.urlsafe_b64decode(env_key.encode() + b"=" * (-len(env_key) % 4))
-        if len(raw) != 32:
-            raise VaultLocked(f"{ENV_MASTER_KEY} must be 32 bytes, base64-encoded")
-        return raw
-
-    try:
-        import keyring
-        import keyring.errors
-
-        stored = keyring.get_password(KEYRING_SERVICE, str(state_dir))
-        if stored:
-            return base64.urlsafe_b64decode(stored.encode())
-        if not create:
-            raise VaultLocked("no master key in OS keyring")
-        raw = secrets.token_bytes(32)
-        keyring.set_password(
-            KEYRING_SERVICE, str(state_dir), base64.urlsafe_b64encode(raw).decode()
-        )
-        return raw
-    except VaultLocked:
-        raise
-    except Exception:
-        pass  # no usable keyring backend -> keyfile fallback
-
-    keyfile = state_dir / "master.key"
-    if keyfile.exists():
-        return base64.urlsafe_b64decode(keyfile.read_bytes().strip())
-    if not create:
-        raise VaultLocked(f"no master key at {keyfile}")
-    raw = secrets.token_bytes(32)
-    _hardened_write(keyfile, base64.urlsafe_b64encode(raw))
-    return raw
-
-
 class Vault:
-    def __init__(self, state_dir: str | Path | None = None, master_key: bytes | None = None):
+    def __init__(
+        self,
+        state_dir: str | Path | None = None,
+        master_key: bytes | None = None,
+        passphrase: str | None = None,
+    ):
         self.state_dir = Path(state_dir).expanduser() if state_dir else default_state_dir()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir.chmod(0o700)
         self.db_path = self.state_dir / "baton.db"
-        self._key = master_key or _load_master_key(self.state_dir)
-        self._aead = AESGCM(self._key)
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         os.chmod(self.db_path, 0o600)
 
-    def close(self) -> None:
-        self._conn.close()
+        self.mode = "unknown"
+        self._master = self._resolve_master_key(master_key, passphrase)
+        self._k_storage = crypto.subkey(self._master, "storage")
+        self._k_lease = crypto.subkey(self._master, "lease")
+        self._k_audit = crypto.subkey(self._master, "audit")
+        self._k_commit = crypto.subkey(self._master, "commit")
+        self._set_meta("schema_version", str(SCHEMA_VERSION))
 
-    def __enter__(self) -> Vault:
-        return self
-
-    def __enter__(self) -> "Vault":  # type: ignore[no-redef]
+    # ------------------------------------------------------------- lifecycle
+    def __enter__(self) -> "Vault":
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    # ---------------------------------------------------------------- crypto
-    def _seal(self, ident: str, name: str, payload: dict[str, Any]) -> tuple[bytes, bytes]:
-        nonce = secrets.token_bytes(12)
-        aad = f"{ident}\x00{name}".encode()
-        blob = self._aead.encrypt(nonce, json.dumps(payload).encode(), aad)
-        return nonce, blob
+    def close(self) -> None:
+        self._conn.close()
 
-    def _open(self, ident: str, name: str, nonce: bytes, blob: bytes) -> dict[str, Any]:
-        aad = f"{ident}\x00{name}".encode()
-        return json.loads(self._aead.decrypt(nonce, blob, aad).decode())
+    def _get_meta(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def _set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def _resolve_master_key(self, master_key: bytes | None, passphrase: str | None) -> bytes:
+        if master_key is not None:
+            if len(master_key) != crypto.KEY_LEN:
+                raise VaultLocked("master key must be 32 bytes")
+            self.mode = "provided"
+            return master_key
+
+        env_key = os.environ.get(ENV_MASTER_KEY)
+        if env_key:
+            self.mode = "env"
+            return crypto.key_from_b64(env_key)
+
+        passphrase = passphrase or os.environ.get(ENV_PASSPHRASE)
+        if passphrase:
+            import base64
+
+            salt_b64 = self._get_meta("kdf_salt")
+            if salt_b64:
+                salt = base64.urlsafe_b64decode(salt_b64)
+            else:
+                salt = crypto.new_salt()
+                self._set_meta("kdf_salt", base64.urlsafe_b64encode(salt).decode())
+            self.mode = "passphrase"
+            return crypto.derive_key_argon2id(passphrase, salt)
+
+        try:
+            import keyring
+
+            stored = keyring.get_password(KEYRING_SERVICE, str(self.state_dir))
+            if stored:
+                self.mode = "keyring"
+                return crypto.key_from_b64(stored)
+            raw = crypto.new_master_key()
+            keyring.set_password(KEYRING_SERVICE, str(self.state_dir), crypto.key_to_b64(raw))
+            self.mode = "keyring"
+            return raw
+        except Exception:
+            pass  # no usable backend -> keyfile
+
+        keyfile = self.state_dir / "master.key"
+        if keyfile.exists():
+            self.mode = "keyfile"
+            return crypto.key_from_b64(keyfile.read_text())
+        raw = crypto.new_master_key()
+        _hardened_write(keyfile, (crypto.key_to_b64(raw) + "\n").encode())
+        self.mode = "keyfile"
+        return raw
 
     # ----------------------------------------------------------- credentials
+    @staticmethod
+    def _cred_aad(ident: str, name: str) -> bytes:
+        return f"cred:{ident}:{name}".encode()
+
+    def get_credential_row(self, name: str) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM credentials WHERE name=?", (name,)).fetchone()
+
     def put_credential(self, cred: Credential) -> Credential:
-        existing = self.get_credential_row(cred.name)
-        if existing:
-            cred.id = existing["id"]
-            cred.created_at = existing["created_at"]
+        row = self.get_credential_row(cred.name)
+        if row is not None:
+            cred.id = row["id"]
+            cred.created_at = row["created_at"]
         cred.updated_at = time.time()
         public = {
+            "provider": cred.provider,
+            "fields": sorted(cred.secret),
             "scopes": cred.scopes,
             "expires_at": cred.expires_at,
             "notes": cred.notes,
             "meta": cred.meta,
             "auth": cred.auth,
             "materialize": cred.materialize,
-            "fields": sorted(cred.secret),
         }
-        nonce, blob = self._seal(cred.id, cred.name, cred.secret)
+        envelope = crypto.seal(
+            self._k_storage,
+            json.dumps(cred.secret).encode(),
+            self._cred_aad(cred.id, cred.name),
+            commit_key=self._k_commit,
+        )
         self._conn.execute(
-            "INSERT INTO credentials(id,name,provider,nonce,blob,meta,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?)"
+            "INSERT INTO credentials(id,name,provider,envelope,meta,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?)"
             " ON CONFLICT(name) DO UPDATE SET provider=excluded.provider,"
-            " nonce=excluded.nonce, blob=excluded.blob, meta=excluded.meta,"
+            " envelope=excluded.envelope, meta=excluded.meta,"
             " updated_at=excluded.updated_at",
             (
                 cred.id,
                 cred.name,
                 cred.provider,
-                nonce,
-                blob,
+                envelope,
                 json.dumps(public),
                 cred.created_at,
                 cred.updated_at,
             ),
         )
         self._conn.commit()
+        self.audit(
+            None, None, "credential.put", cred.name, True, {"fields": sorted(cred.secret)}
+        )
         return cred
-
-    def get_credential_row(self, name: str) -> sqlite3.Row | None:
-        cur = self._conn.execute("SELECT * FROM credentials WHERE name=?", (name,))
-        return cur.fetchone()
 
     def get_credential(self, name: str) -> Credential:
         row = self.get_credential_row(name)
         if row is None:
             raise UnknownCredential(name)
         pub = json.loads(row["meta"])
-        secret = self._open(row["id"], row["name"], row["nonce"], row["blob"])
+        secret = json.loads(
+            crypto.open_envelope(
+                self._k_storage,
+                row["envelope"],
+                self._cred_aad(row["id"], row["name"]),
+                commit_key=self._k_commit,
+            )
+        )
         return Credential(
             name=row["name"],
             provider=row["provider"],
@@ -241,20 +282,20 @@ class Vault:
 
     def list_credentials(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name, provider, meta, created_at, updated_at FROM credentials ORDER BY name"
+            "SELECT name, provider, meta FROM credentials ORDER BY name"
         ).fetchall()
         out = []
         for r in rows:
             pub = json.loads(r["meta"])
+            exp = pub.get("expires_at")
             out.append(
                 {
                     "name": r["name"],
                     "provider": r["provider"],
                     "fields": pub.get("fields", []),
                     "scopes": pub.get("scopes", []),
-                    "expires_at": pub.get("expires_at"),
-                    "expired": pub.get("expires_at") is not None
-                    and pub["expires_at"] <= time.time(),
+                    "expires_at": exp,
+                    "expired": exp is not None and exp <= time.time(),
                     "notes": pub.get("notes", ""),
                 }
             )
@@ -263,20 +304,22 @@ class Vault:
     def delete_credential(self, name: str) -> bool:
         cur = self._conn.execute("DELETE FROM credentials WHERE name=?", (name,))
         self._conn.commit()
+        if cur.rowcount:
+            self.audit(None, None, "credential.delete", name, True, {})
         return cur.rowcount > 0
 
     # -------------------------------------------------------------- contexts
     def put_context(self, ctx: Context) -> Context:
-        existing = self._conn.execute(
+        row = self._conn.execute(
             "SELECT id, created_at FROM contexts WHERE name=?", (ctx.name,)
         ).fetchone()
-        if existing:
-            ctx.id = existing["id"]
-            ctx.created_at = existing["created_at"]
-        ctx.updated_at = time.time()
+        if row is not None:
+            ctx.id = row["id"]
+            ctx.created_at = row["created_at"]
         for name in ctx.credentials:
             if self.get_credential_row(name) is None:
                 raise UnknownCredential(f"context {ctx.name} references unknown {name}")
+        ctx.updated_at = time.time()
         spec = {
             "credentials": ctx.credentials,
             "description": ctx.description,
@@ -286,10 +329,12 @@ class Vault:
         }
         self._conn.execute(
             "INSERT INTO contexts(id,name,spec,created_at,updated_at) VALUES(?,?,?,?,?)"
-            " ON CONFLICT(name) DO UPDATE SET spec=excluded.spec, updated_at=excluded.updated_at",
+            " ON CONFLICT(name) DO UPDATE SET spec=excluded.spec,"
+            " updated_at=excluded.updated_at",
             (ctx.id, ctx.name, json.dumps(spec), ctx.created_at, ctx.updated_at),
         )
         self._conn.commit()
+        self.audit(None, None, "context.put", ctx.name, True, {"credentials": ctx.credentials})
         return ctx
 
     def get_context(self, name: str) -> Context:
@@ -327,15 +372,13 @@ class Vault:
     def delete_context(self, name: str) -> bool:
         cur = self._conn.execute("DELETE FROM contexts WHERE name=?", (name,))
         self._conn.commit()
+        if cur.rowcount:
+            self.audit(None, None, "context.delete", name, True, {})
         return cur.rowcount > 0
 
     # ---------------------------------------------------------------- leases
-    def _lease_sign_key(self) -> bytes:
-        return hmac.new(self._key, b"baton/lease/v1", hashlib.sha256).digest()
-
     def _sign(self, body: str) -> str:
-        sig = hmac.new(self._lease_sign_key(), body.encode(), hashlib.sha256).digest()
-        return base64.urlsafe_b64encode(sig).decode().rstrip("=")
+        return crypto.mac_hex(self._k_lease, body.encode(), 32)
 
     def issue_lease(
         self,
@@ -345,15 +388,15 @@ class Vault:
         ttl: float = 900.0,
         max_uses: int | None = None,
     ) -> Lease:
-        ctx = self.get_context(context)  # raises if unknown
+        self.get_context(context)  # raises UnknownContext
         lease = Lease(
-            context=ctx.name,
+            context=context,
             subject=subject,
             services=list(services or []),
             ttl=float(ttl),
             max_uses=max_uses,
         )
-        body = base64.urlsafe_b64encode(
+        body = crypto.b64u_encode(
             json.dumps(
                 {
                     "i": lease.id,
@@ -363,14 +406,14 @@ class Vault:
                 },
                 separators=(",", ":"),
             ).encode()
-        ).decode().rstrip("=")
+        )
         lease.token = f"btn_{body}.{self._sign(body)}"
         self._conn.execute(
             "INSERT INTO leases(id,token_hash,context_name,subject,spec,issued_at,"
             "expires_at,max_uses,uses,revoked) VALUES(?,?,?,?,?,?,?,?,0,0)",
             (
                 lease.id,
-                hashlib.sha256(lease.token.encode()).hexdigest(),
+                crypto.digest(lease.token.encode(), 32).hex(),
                 lease.context,
                 lease.subject,
                 json.dumps({"services": lease.services}),
@@ -380,14 +423,20 @@ class Vault:
             ),
         )
         self._conn.commit()
-        self.audit(lease.id, lease.subject, "lease.issue", lease.context, True, {
-            "services": lease.services, "ttl": ttl
-        })
+        self.audit(
+            lease.id,
+            lease.subject,
+            "lease.issue",
+            lease.context,
+            True,
+            {"services": lease.services, "ttl": ttl, "max_uses": max_uses},
+        )
         return lease
 
-    def _lease_from_row(self, row: sqlite3.Row) -> Lease:
+    @staticmethod
+    def _lease_from_row(row: sqlite3.Row) -> Lease:
         spec = json.loads(row["spec"])
-        lease = Lease(
+        return Lease(
             context=row["context_name"],
             subject=row["subject"],
             services=spec.get("services", []),
@@ -398,7 +447,6 @@ class Vault:
             uses=row["uses"],
             revoked=bool(row["revoked"]),
         )
-        return lease
 
     def resolve_lease(self, token: str, consume: bool = True) -> Lease:
         """Verify signature, then DB state (revocation, TTL, use budget)."""
@@ -406,10 +454,11 @@ class Vault:
             body, sig = token.strip().split(".", 1)
         except ValueError:
             raise LeaseError("malformed lease token")
-        if not hmac.compare_digest(sig, self._sign(body)):
+        body = body.removeprefix("btn_")
+        if not secrets.compare_digest(sig, self._sign(body)):
             raise LeaseError("lease signature invalid")
         try:
-            payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+            payload = json.loads(crypto.b64u_decode(body))
         except Exception:
             raise LeaseError("malformed lease payload")
         row = self._conn.execute(
@@ -436,7 +485,11 @@ class Vault:
         rows = self._conn.execute("SELECT * FROM leases ORDER BY issued_at DESC").fetchall()
         return [self._lease_from_row(r).public() for r in rows]
 
-    # ----------------------------------------------------------------- audit
+    # ----------------------------------------------------------- audit chain
+    def _last_hash(self) -> str:
+        row = self._conn.execute("SELECT hash FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
+        return row["hash"] if row else "00" * 32
+
     def audit(
         self,
         lease_id: str | None,
@@ -446,18 +499,26 @@ class Vault:
         ok: bool,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        ts = time.time()
+        prev = self._last_hash()
+        entry = json.dumps(
+            {
+                "ts": ts,
+                "lease_id": lease_id,
+                "subject": subject,
+                "action": action,
+                "target": target,
+                "ok": bool(ok),
+                "detail": detail or {},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        h = crypto.chain(bytes.fromhex(prev), entry).hex()
         self._conn.execute(
-            "INSERT INTO audit(ts,lease_id,subject,action,target,ok,detail)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (
-                time.time(),
-                lease_id,
-                subject,
-                action,
-                target,
-                int(ok),
-                json.dumps(detail or {}),
-            ),
+            "INSERT INTO audit(ts,lease_id,subject,action,target,ok,detail,prev_hash,hash)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (ts, lease_id, subject, action, target, int(ok), entry.decode(), prev, h),
         )
         self._conn.commit()
 
@@ -475,6 +536,37 @@ class Vault:
                 "target": r["target"],
                 "ok": bool(r["ok"]),
                 "detail": json.loads(r["detail"] or "{}"),
+                "hash": r["hash"],
             }
             for r in rows
         ]
+
+    def verify_audit(self) -> tuple[bool, int]:
+        """Recompute the chain. Returns (intact, first_bad_seq)."""
+        prev = b"\x00" * 32
+        rows = self._conn.execute("SELECT * FROM audit ORDER BY seq ASC").fetchall()
+        for r in rows:
+            expect = crypto.chain(prev, r["detail"].encode()).hex()
+            if expect != r["hash"] or r["prev_hash"] != prev.hex():
+                return False, r["seq"]
+            prev = bytes.fromhex(r["hash"])
+        return True, 0
+
+    # ----------------------------------------------------------------- misc
+    def stats(self) -> dict[str, Any]:
+        def count(table: str) -> int:
+            return self._conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+
+        return {
+            "state_dir": str(self.state_dir),
+            "key_mode": self.mode,
+            "cipher": "aes-256-gcm-siv"
+            if crypto.DEFAULT_CIPHER == crypto.CIPHER_GCM_SIV
+            else "chacha20-poly1305",
+            "hash": "blake3",
+            "schema": SCHEMA_VERSION,
+            "credentials": count("credentials"),
+            "contexts": count("contexts"),
+            "leases": count("leases"),
+            "audit_events": count("audit"),
+        }

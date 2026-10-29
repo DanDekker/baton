@@ -8,7 +8,9 @@ description = "Auth-context broker and lease server for agents: pass handles, ne
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-  "cryptography>=42",
+  "cryptography>=45",
+  "blake3>=1.0",
+  "argon2-cffi>=25",
   "keyring>=24",
   "mcp>=2.0",
   "httpx>=0.27",
