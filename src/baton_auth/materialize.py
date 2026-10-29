@@ -15,11 +15,12 @@ import base64
 import json
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .models import BatonError, Context
+from .models import BatonError, Context, LeaseError
 from .vault import Vault
 
 
@@ -72,7 +73,22 @@ def _refs(template: str) -> set[str]:
     return set(_PLACEHOLDER.findall(template)) - {"HOME"}
 
 
-def plan(vault: Vault, context_name: str) -> Plan:
+def _safe_subpath(root: Path, rel: str, where: str) -> Path:
+    cleaned = rel.lstrip("/")
+    if not cleaned or Path(cleaned).is_absolute() or ".." in Path(cleaned).parts:
+        raise MaterializeError(f"{where}: unsafe path {rel!r}")
+    candidate = (root / cleaned).resolve()
+    if candidate == root or not candidate.is_relative_to(root):
+        raise MaterializeError(f"{where}: path {rel!r} escapes {root}")
+    return candidate
+
+
+def plan(
+    vault: Vault,
+    context_name: str,
+    *,
+    allowed_services: Sequence[str] | None = None,
+) -> Plan:
     ctx = vault.get_context(context_name)
     p = Plan(context=ctx)
 
@@ -83,7 +99,19 @@ def plan(vault: Vault, context_name: str) -> Plan:
             base[name] = os.environ[name]
     p.env = base
 
-    for cred_name in ctx.credentials:
+    if allowed_services is not None and "*" not in allowed_services:
+        allowed_set = set(allowed_services)
+        cred_names = [
+            name
+            for name in ctx.credentials
+            if name in allowed_set or vault.get_credential_provider(name) in allowed_set
+        ]
+        if ctx.credentials and not cred_names:
+            raise LeaseError(f"lease does not grant any service in context {ctx.name!r}")
+    else:
+        cred_names = list(ctx.credentials)
+
+    for cred_name in cred_names:
         cred = vault.get_credential(cred_name, auto_refresh=True)
         fields = {k: v for k, v in cred.secret.items() if v}
         p.secrets.extend(v for v in fields.values() if len(v) >= 8)
@@ -139,6 +167,8 @@ def plan(vault: Vault, context_name: str) -> Plan:
                 user = _render(step["username"], fields, "", where)
                 password = _render(step["password"], fields, "", where)
                 token = base64.b64encode(f"{user}:{password}".encode()).decode()
+                if len(token) >= 8:
+                    p.secrets.append(token)
                 payload = {"auths": {registry: {"auth": token}}}
                 p.files.append(
                     FileSpec(path=step["path"].lstrip("/"), content=json.dumps(payload, indent=2))
@@ -156,7 +186,7 @@ def apply(plan_obj: Plan, home: Path) -> dict[str, str]:
     os_home = str(home)
 
     for spec in _merge_files(plan_obj.files):
-        target = home / spec.path
+        target = _safe_subpath(home, spec.path, f"context {plan_obj.context.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(spec.content)
         target.chmod(spec.mode)
@@ -179,16 +209,17 @@ def apply(plan_obj: Plan, home: Path) -> dict[str, str]:
         Path(env[d]).mkdir(parents=True, exist_ok=True)
 
     # opt-in inheritance of non-secret dotfiles (gitconfig, ssh/known_hosts, ...)
-    real_home = Path.home()
+    real_home = Path.home().resolve()
     for rel in plan_obj.context.inherit_paths:
-        src = real_home / rel
-        dst = home / rel
-        if not src.exists():
+        src = _safe_subpath(real_home, rel, "inherit_paths")
+        dst = _safe_subpath(home, rel, "inherit_paths")
+        if not src.exists() or not src.is_file():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists():
             continue
         dst.write_text(src.read_text(errors="replace"))
+        dst.chmod(0o600)
     return env
 
 
