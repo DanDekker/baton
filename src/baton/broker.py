@@ -135,6 +135,23 @@ def pick_credential(creds: list[Credential], service: str | None) -> Credential:
     )
 
 
+def _pick_credential_name(vault: Vault, names: list[str], service: str | None) -> str:
+    """Select using public metadata before decrypting or refreshing a credential."""
+    if service:
+        for name in names:
+            provider = vault.get_credential_provider(name)
+            if provider is None:
+                raise UnknownCredential(f"unknown credential {name!r} (see `baton cred list`)")
+            if name == service or provider == service:
+                return name
+        raise UnknownCredential(f"no credential for service {service!r} in context")
+    if len(names) == 1:
+        return names[0]
+    raise BrokerError(
+        "context has several credentials; name one with service=" + str(names)
+    )
+
+
 def _sigv4(
     cred: Credential, method: str, url: str, headers: dict[str, str], body: bytes
 ) -> dict[str, str]:
@@ -264,10 +281,10 @@ def request(
         context_name = target
 
     ctx = vault.get_context(context_name)
-    creds = [vault.get_credential(name, auto_refresh=True) for name in ctx.credentials]
-    if not creds:
+    if not ctx.credentials:
         raise BrokerError(f"context {context_name} has no credentials")
-    cred = pick_credential(creds, service)
+    cred_name = _pick_credential_name(vault, ctx.credentials, service)
+    cred = vault.get_credential(cred_name, auto_refresh=True)
 
     payload = body if body is not None else b""
     if json_body is not None:
@@ -276,22 +293,34 @@ def request(
         payload = _json.dumps(json_body).encode()
         headers = {**(headers or {}), "content-type": "application/json"}
 
+    public_url = url
     final_headers, query = attach_auth(cred, method.upper(), url, dict(headers or {}), payload)
     if query:
         sep = "&" if "?" in url else "?"
         url = url + sep + "&".join(f"{k}={quote(v, safe='')}" for k, v in query.items())
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    # A redirect destination has not passed the SSRF guard. Return the 3xx
+    # response so the caller can explicitly make a separately validated request.
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         resp = client.request(method.upper(), url, headers=final_headers, content=payload or None)
 
-    redactor = Redactor(list(cred.secret.values()))
+    # Query auth percent-encodes values. Echoes in bodies or Location headers
+    # need to be scrubbed in both their original and wire representations.
+    secret_values = list(cred.secret.values())
+    redactor = Redactor([*secret_values, *(quote(value, safe="") for value in secret_values)])
     raw = resp.text
     truncated = len(raw) > MAX_BODY
     clean, hits = redactor.redact_counted(raw[:MAX_BODY])
     safe_headers = {
         k: v for k, v in resp.headers.items() if k.lower() in _SAFE_HEADERS
     }
-    clean_headers = {k: redactor.redact(v) for k, v in safe_headers.items()}
+    clean_headers = {}
+    for k, v in safe_headers.items():
+        clean_headers[k], n = redactor.redact_counted(v)
+        hits += n
+    # Never return the URL after query authentication has added a secret.
+    safe_url, n = redactor.redact_counted(public_url)
+    hits += n
 
     vault.audit(
         lease.id if lease else None,
@@ -302,7 +331,7 @@ def request(
         {"status": resp.status_code, "credential": cred.name},
     )
     return HttpResponse(
-        url=url,
+        url=safe_url,
         status=resp.status_code,
         headers=clean_headers,
         body=clean,

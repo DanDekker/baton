@@ -11,21 +11,25 @@ import re
 from collections.abc import Iterable
 
 # Provider token shapes worth catching even when we did not mint them.
-_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("aws-akid", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{82}\b")),
-    ("github", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
-    ("gitlab", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b")),
-    ("slack", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}\b")),
-    ("openai-proj", re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{48,}\b")),
-    ("openai", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
-    ("anthropic-api", re.compile(r"\bsk-ant-api03-[A-Za-z0-9_\-]{86}\b")),
-    ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
-    ("google-api", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
-    ("stripe", re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")),
+_PATTERNS: list[tuple[str, tuple[str, ...], re.Pattern[str]]] = [
+    ("aws-akid", ("AKIA", "ASIA"), re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("github-pat", ("github_pat_",), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{82}\b")),
+    ("github", ("ghp_", "gho_", "ghu_", "ghs_", "ghr_"), re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("gitlab", ("glpat-",), re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b")),
+    (
+        "slack",
+        ("xoxa-", "xoxb-", "xoxp-", "xoxo-", "xoxs-", "xoxr-"),
+        re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}\b"),
+    ),
+    ("openai-proj", ("sk-proj-",), re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{48,}\b")),
+    ("openai", ("sk-",), re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
+    ("anthropic-api", ("sk-ant-api03-",), re.compile(r"\bsk-ant-api03-[A-Za-z0-9_\-]{86}\b")),
+    ("anthropic", ("sk-ant-",), re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
+    ("google-api", ("AIza",), re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("huggingface", ("hf_",), re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
+    ("stripe", ("sk_live_", "rk_live_"), re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}\b")),
+    ("jwt", ("eyJ",), re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
+    ("private-key", ("-----BEGIN ",), re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")),
 ]
 
 MIN_LEN = 8
@@ -78,9 +82,10 @@ class Redactor:
         if self._literal_pattern is not None:
             out, n = self._literal_pattern.subn(self._marker, out)
             hits += n
-        for name, pat in _PATTERNS:
-            out, n = pat.subn(f"{self._marker}[{name}]", out)
-            hits += n
+        for name, prefixes, pattern in _PATTERNS:
+            if any(prefix in out for prefix in prefixes):
+                out, n = pattern.subn(f"{self._marker}[{name}]", out)
+                hits += n
         return out, hits
 
     def redact_obj(self, obj: object) -> object:

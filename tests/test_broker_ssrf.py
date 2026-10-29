@@ -1,3 +1,6 @@
+from urllib.parse import quote
+
+import httpx
 import pytest
 
 from baton import broker, cli
@@ -88,3 +91,74 @@ def test_cli_http_parser_flags():
     )
     assert args2.allow_private is False
     assert args2.disallow_loopback is True
+
+
+def _stub_client(monkeypatch, response):
+    calls = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def request(self, method, url, **kwargs):
+            calls.append(("request", method, url, kwargs))
+            return response
+
+    monkeypatch.setattr(broker.httpx, "Client", Client)
+    return calls
+
+
+def test_broker_only_loads_selected_credential(vault, monkeypatch):
+    vault.put_credential(build_credential("other", "generic", {"token": "other_secret_12345"}))
+    vault.put_context(Context(name="both", credentials=["test-api", "other"]))
+    calls = _stub_client(monkeypatch, httpx.Response(200, text="ok"))
+    loaded = []
+    original = vault.get_credential
+
+    def get_credential(name, **kwargs):
+        loaded.append((name, kwargs))
+        return original(name, **kwargs)
+
+    monkeypatch.setattr(vault, "get_credential", get_credential)
+    response = broker.request(vault, "both", "GET", "http://127.0.0.1/test", service="other")
+    assert response.status == 200
+    assert [name for name, _ in loaded] == ["other", "other"]
+    assert loaded[0][1] == {"auto_refresh": True}
+    assert len([call for call in calls if call[0] == "request"]) == 1
+
+
+def test_broker_returns_redirect_without_following_it(vault, monkeypatch):
+    calls = _stub_client(
+        monkeypatch,
+        httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"}),
+    )
+    response = broker.request(vault, "default", "GET", "http://127.0.0.1/redirect")
+    assert response.status == 302
+    assert response.headers["location"] == "http://169.254.169.254/latest/meta-data/"
+    assert calls[0] == ("init", {"timeout": 30.0, "follow_redirects": False})
+    assert len([call for call in calls if call[0] == "request"]) == 1
+
+
+def test_broker_redacts_query_auth_from_returned_url(vault, monkeypatch):
+    cred = vault.get_credential("test-api")
+    cred.secret["token"] = "secret+/value=12345"
+    cred.auth = {"scheme": "query", "field": "token", "param": "key"}
+    vault.put_credential(cred)
+    encoded = quote(cred.secret["token"], safe="")
+    calls = _stub_client(
+        monkeypatch,
+        httpx.Response(302, headers={"location": f"http://127.0.0.1/next?key={encoded}"}),
+    )
+
+    response = broker.request(vault, "default", "GET", "http://127.0.0.1/probe")
+    assert encoded in calls[1][2]
+    assert response.url == "http://127.0.0.1/probe"
+    assert encoded not in response.headers["location"]
+    assert "«baton:redacted»" in response.headers["location"]
+    assert response.redactions >= 1

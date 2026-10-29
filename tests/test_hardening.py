@@ -119,6 +119,31 @@ def test_redactor_expanded_patterns():
     assert "«baton:redacted»" in scrubbed
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "AKIA" + "A" * 16,
+        "github_pat_" + "A" * 82,
+        "ghp_" + "A" * 20,
+        "glpat-" + "A" * 20,
+        "xoxb-" + "A" * 10,
+        "sk-proj-" + "A" * 48,
+        "sk-" + "A" * 20,
+        "sk-ant-api03-" + "A" * 86,
+        "sk-ant-" + "A" * 20,
+        "AIza" + "A" * 35,
+        "hf_" + "A" * 34,
+        "sk_live_" + "A" * 24,
+        "eyJ" + "A" * 8 + "." + "B" * 8 + "." + "C" * 8,
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+    ],
+)
+def test_redactor_prefix_guards_cover_all_token_shapes(token):
+    clean, hits = Redactor().redact_counted(f"before {token} after")
+    assert token not in clean
+    assert hits == 1
+
+
 # ---------------------------------------------------- runner env scrubbing
 def test_runner_host_env_sanitization(vault, monkeypatch):
     monkeypatch.setenv("LD_PRELOAD", "/malicious/lib.so")

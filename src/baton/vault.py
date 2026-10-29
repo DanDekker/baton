@@ -265,6 +265,13 @@ class Vault:
     def get_credential_row(self, name: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM credentials WHERE name=?", (name,)).fetchone()
 
+    def get_credential_provider(self, name: str) -> str | None:
+        """Look up public metadata without loading the encrypted payload."""
+        row = self._conn.execute(
+            "SELECT provider FROM credentials WHERE name=?", (name,)
+        ).fetchone()
+        return row["provider"] if row else None
+
     @_atomic
     def put_credential(self, cred: Credential) -> Credential:
         row = self.get_credential_row(cred.name)
