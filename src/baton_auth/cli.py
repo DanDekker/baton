@@ -444,12 +444,22 @@ def cmd_info(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    if args.client in {"muse-code", "hermes-agent"}:
+    if args.client == "agents-md":
+        if args.root:
+            raise BatonError("--root is only for generic JSON config")
+        target = args.output or str(Path.cwd() / "AGENTS.md")
+        path = integration.write_agent_instructions(target)
+        _out(f"added baton instructions to {path}")
+        return 0
+    if args.client in {"muse-code", "hermes-agent", "zed"}:
         if args.root:
             raise BatonError("--root is only for generic JSON config")
         if args.client == "muse-code":
             target = args.output or integration.muse_settings_path()
             path = integration.write_muse_config(target, args.state_dir)
+        elif args.client == "zed":
+            target = args.output or integration.zed_settings_path()
+            path = integration.write_zed_config(target, args.state_dir)
         else:
             target = args.output or integration.hermes_config_path()
             path = integration.write_hermes_config(target, args.state_dir)
@@ -476,6 +486,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
             target = str(Path.home() / ".cursor" / "mcp.json")
         if target is None and args.client == "vscode":
             target = str(Path.cwd() / ".vscode" / "mcp.json")
+        if target is None and args.client == "claude-desktop":
+            target = str(integration.claude_desktop_config_path())
+        if target is None and args.client == "windsurf":
+            target = str(integration.windsurf_config_path())
         if target:
             path = integration.write_mcp_config(target, config)
             _out(f"added baton to {path}")
@@ -519,8 +533,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument(
         "--client", choices=[
-            "generic", "codex", "claude-code", "cursor", "vscode",
-            "muse-code", "hermes-agent",
+            "generic", "codex", "claude-code", "claude-desktop", "cursor",
+            "vscode", "windsurf", "zed", "muse-code", "hermes-agent",
+            "agents-md",
         ],
         default="generic", help="install for a known client or print portable JSON",
     )

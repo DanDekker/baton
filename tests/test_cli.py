@@ -148,6 +148,39 @@ def test_muse_code_refuses_ambiguous_mcp_keys(env, tmp_path, capsys):
     assert "both Muse MCP keys" in capsys.readouterr().err
 
 
+def test_setup_zed_windsurf_claude_desktop_and_agents_md(env, tmp_path):
+    zed_file = tmp_path / "zed.json"
+    zed_file.write_text('{"theme": "One Dark"}')
+    assert main([
+        "setup", "--client", "zed", "--output", str(zed_file), "--state-dir", str(env),
+    ]) == 0
+    zed_data = json.loads(zed_file.read_text())
+    assert zed_data["theme"] == "One Dark"
+    assert zed_data["context_servers"]["baton"]["env"]["BATON_STATE_DIR"] == str(env)
+
+    ws_file = tmp_path / "windsurf.json"
+    assert main([
+        "setup", "--client", "windsurf", "--output", str(ws_file), "--state-dir", str(env),
+    ]) == 0
+    assert json.loads(ws_file.read_text())["mcpServers"]["baton"]["command"] == sys.executable
+
+    cd_file = tmp_path / "claude_desktop.json"
+    assert main([
+        "setup", "--client", "claude-desktop", "--output", str(cd_file), "--state-dir", str(env),
+    ]) == 0
+    assert json.loads(cd_file.read_text())["mcpServers"]["baton"]["command"] == sys.executable
+
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# Project Notes\n")
+    assert main([
+        "setup", "--client", "agents-md", "--output", str(agents_md),
+    ]) == 0
+    content = agents_md.read_text()
+    assert "# Project Notes" in content
+    assert "## Baton Authentication Broker" in content
+    assert "baton run <context>" in content
+
+
 def test_custom_provider_auth_and_context(env, capsys):
     assert main([
         "cred", "add", "api", "--provider", "example-api",
