@@ -75,6 +75,35 @@ def import_credential(
     return catalog.build_credential(cred_name, provider, values)
 
 
+_AUTO_IMPORT_ORDER: tuple[str, ...] = (
+    "github",
+    "aws",
+    "anthropic",
+    "openai",
+    "huggingface",
+    "npm",
+    "pypi",
+    "kube",
+    "gcp",
+    "docker",
+    "gitlab",
+    "cloudflare",
+    "stripe",
+    "slack",
+)
+
+
+def import_all() -> list[Credential]:
+    """Scan local CLI configs and environment variables and import all found credentials."""
+    found: list[Credential] = []
+    for provider in _AUTO_IMPORT_ORDER:
+        try:
+            found.append(import_credential(provider))
+        except BatonError:
+            continue
+    return found
+
+
 def _import_github(path: Path | None) -> dict[str, str]:
     if path is None:
         try:

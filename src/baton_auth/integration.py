@@ -153,6 +153,27 @@ def write_agent_instructions(path: str | Path = "AGENTS.md") -> Path:
     return target
 
 
+def setup_detected_clients(state_dir: str | None = None) -> list[Path]:
+    """Detect installed MCP clients by config directory and configure each one."""
+    configured: list[Path] = []
+    json_clients = [
+        (Path.home() / ".cursor" / "mcp.json", "mcpServers", (Path.home() / ".cursor").is_dir()),
+        (claude_desktop_config_path(), "mcpServers", claude_desktop_config_path().parent.is_dir()),
+        (windsurf_config_path(), "mcpServers", windsurf_config_path().parent.is_dir()),
+        (Path.cwd() / ".vscode" / "mcp.json", "servers", (Path.cwd() / ".vscode").is_dir()),
+    ]
+    for target, root, present in json_clients:
+        if present:
+            configured.append(write_mcp_config(target, mcp_config(state_dir, root)))
+    if zed_settings_path().parent.is_dir():
+        configured.append(write_zed_config(zed_settings_path(), state_dir))
+    if muse_settings_path().parent.is_dir():
+        configured.append(write_muse_config(muse_settings_path(), state_dir))
+    if hermes_config_path().parent.is_dir():
+        configured.append(write_hermes_config(hermes_config_path(), state_dir))
+    return configured
+
+
 def write_hermes_config(path: str | Path, state_dir: str | None = None) -> Path:
     """Round-trip Hermes YAML so comments and other settings survive setup."""
     from ruamel.yaml import YAML

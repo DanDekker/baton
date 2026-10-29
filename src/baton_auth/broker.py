@@ -183,7 +183,12 @@ def pick_credential(creds: list[Credential], service: str | None) -> Credential:
     )
 
 
-def _pick_credential_name(vault: Vault, names: list[str], service: str | None) -> str:
+def _pick_credential_name(
+    vault: Vault,
+    names: list[str],
+    service: str | None,
+    url: str | None = None,
+) -> str:
     """Select using public metadata before decrypting or refreshing a credential."""
     if service:
         for name in names:
@@ -195,6 +200,25 @@ def _pick_credential_name(vault: Vault, names: list[str], service: str | None) -
         raise UnknownCredential(f"no credential for service {service!r} in context")
     if len(names) == 1:
         return names[0]
+    if url:
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        if host:
+            import json as _json
+
+            matched = []
+            for name in names:
+                row = vault.get_credential_row(name)
+                if row is None:
+                    continue
+                allowed = _json.loads(row["meta"]).get("allowed_hosts") or []
+                if (
+                    allowed
+                    and "*" not in allowed
+                    and any(host_matches(host, pat) for pat in allowed)
+                ):
+                    matched.append(name)
+            if len(matched) == 1:
+                return matched[0]
     raise BrokerError(
         "context has several credentials; name one with service=" + str(names)
     )
@@ -343,7 +367,7 @@ def request(
             raise LeaseError(f"lease does not grant any service in context {context_name!r}")
     else:
         candidates = ctx.credentials
-    cred_name = _pick_credential_name(vault, candidates, service)
+    cred_name = _pick_credential_name(vault, candidates, service, url=url)
     cred = vault.get_credential(cred_name, auto_refresh=True)
     validate_credential_host(cred, url, allow_loopback=allow_loopback)
 
