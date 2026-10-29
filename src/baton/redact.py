@@ -58,15 +58,22 @@ class Redactor:
         return self.redact(text)
 
     def redact(self, text: str) -> str:
+        return self.redact_counted(text)[0]
+
+    def redact_counted(self, text: str) -> tuple[str, int]:
+        """Redact and report how many substitutions were made."""
         if not isinstance(text, str):
-            return text
+            return text, 0
         out = text
+        hits = 0
         for v in self._values:
             if v and v in out:
+                hits += out.count(v)
                 out = out.replace(v, self._marker)
         for name, pat in _PATTERNS:
-            out = pat.sub(f"{self._marker}[{name}]", out)
-        return out
+            out, n = pat.subn(f"{self._marker}[{name}]", out)
+            hits += n
+        return out, hits
 
     def redact_obj(self, obj: object) -> object:
         if isinstance(obj, str):
