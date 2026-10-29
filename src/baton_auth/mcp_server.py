@@ -123,11 +123,15 @@ def build(vault: Vault) -> MCPServer:
         argv: list[str],
         timeout_seconds: int = 300,
         service: str | None = None,
+        cwd: str | None = None,
+        stdin: str | None = None,
     ) -> dict[str, Any]:
         result = runner.run(
             vault,
             lease_or_context,
             argv,
+            cwd=cwd,
+            stdin=stdin,
             timeout=float(timeout_seconds) if timeout_seconds else None,
             service=service,
         )

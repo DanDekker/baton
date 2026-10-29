@@ -78,6 +78,23 @@ def test_run_audits(vault):
     assert any(e["action"] == "run" for e in vault.audit_tail(10))
 
 
+def test_run_preserves_caller_cwd_and_validates_explicit_cwd(vault, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    result = runner.run(
+        vault,
+        "ghctx",
+        ["sh", "-c", "pwd; echo $HOME"],
+        cwd=str(project),
+    )
+    lines = result.stdout.strip().splitlines()
+    assert Path(lines[0]).resolve() == project.resolve()
+    assert Path(lines[1]).resolve() != project.resolve()
+
+    with pytest.raises(runner.RunError, match="working directory not found"):
+        runner.run(vault, "ghctx", ["true"], cwd=str(tmp_path / "missing-dir"))
+
+
 # ------------------------------------------------------------------ broker
 class _EchoHeaders(BaseHTTPRequestHandler):
     seen: dict[str, str] = {}
@@ -175,7 +192,7 @@ def test_mcp_exposes_tools_without_secrets(vault):
     assert info["custom_providers"] is True
 
 
-def test_mcp_lease_then_run_roundtrip(vault):
+def test_mcp_lease_then_run_roundtrip(vault, tmp_path):
     server = build(vault)
     lease = _payload(
         asyncio.run(server.call_tool("baton_lease", {"context": "ghctx", "ttl_seconds": 60}))
@@ -183,11 +200,19 @@ def test_mcp_lease_then_run_roundtrip(vault):
     result = _payload(
         asyncio.run(
             server.call_tool(
-                "baton_run", {"lease_or_context": lease["token"], "argv": ["sh", "-c", "echo $GH_TOKEN"]}
+                "baton_run",
+                {
+                    "lease_or_context": lease["token"],
+                    "argv": ["sh", "-c", "cat; pwd; echo $GH_TOKEN"],
+                    "cwd": str(tmp_path),
+                    "stdin": "hello-stdin\n",
+                },
             )
         )
     )
     assert result["exit_code"] == 0
+    assert "hello-stdin" in result["stdout"]
+    assert str(tmp_path.resolve()) in result["stdout"]
     assert GH_TOKEN not in result["stdout"]
 
 
