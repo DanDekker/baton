@@ -289,6 +289,7 @@ class Vault:
             "auth": cred.auth,
             "materialize": cred.materialize,
             "refresh": cred.refresh,
+            "allowed_hosts": cred.allowed_hosts,
         }
         envelope = crypto.seal(
             self._k_storage,
@@ -348,6 +349,7 @@ class Vault:
             materialize=pub.get("materialize", []),
             auth=pub.get("auth", {}),
             refresh=pub.get("refresh", {}),
+            allowed_hosts=pub.get("allowed_hosts", []),
             scopes=pub.get("scopes", []),
             expires_at=pub.get("expires_at"),
             notes=pub.get("notes", ""),
@@ -420,6 +422,7 @@ class Vault:
                     "expired": exp is not None and exp <= time.time(),
                     "refreshable": bool(ref),
                     "refresh_provider": ref.get("provider") or ref.get("type"),
+                    "allowed_hosts": pub.get("allowed_hosts", []),
                     "notes": pub.get("notes", ""),
                 }
             )

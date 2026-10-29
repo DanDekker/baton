@@ -98,6 +98,42 @@ class BrokerError(BatonError):
     """Request could not be attributed to a credential."""
 
 
+def host_matches(host: str, pattern: str) -> bool:
+    h = host.strip().lower().rstrip(".")
+    p = pattern.strip().lower().rstrip(".")
+    if not h or not p:
+        return False
+    if p == "*":
+        return True
+    if p.startswith("*."):
+        root = p[2:]
+        return h == root or h.endswith("." + root)
+    return h == p
+
+
+def validate_credential_host(
+    cred: Credential,
+    url: str,
+    *,
+    allow_loopback: bool = True,
+) -> None:
+    """Ensure a host-scoped credential is never sent to an unauthorized domain."""
+    if not cred.allowed_hosts or "*" in cred.allowed_hosts:
+        return
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        raise BrokerError("missing host in URL")
+    if any(host_matches(host, pat) for pat in cred.allowed_hosts):
+        return
+    if allow_loopback and host in {"localhost", "127.0.0.1", "::1"}:
+        return
+    allowed = ", ".join(cred.allowed_hosts)
+    raise BrokerError(
+        f"credential {cred.name!r} ({cred.provider}) is not allowed for host {host!r} "
+        f"(allowed: {allowed})"
+    )
+
+
 @dataclass(slots=True)
 class HttpResponse:
     url: str
@@ -285,6 +321,7 @@ def request(
         raise BrokerError(f"context {context_name} has no credentials")
     cred_name = _pick_credential_name(vault, ctx.credentials, service)
     cred = vault.get_credential(cred_name, auto_refresh=True)
+    validate_credential_host(cred, url, allow_loopback=allow_loopback)
 
     payload = body if body is not None else b""
     if json_body is not None:

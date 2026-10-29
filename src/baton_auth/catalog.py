@@ -28,6 +28,7 @@ class Preset:
     optional: tuple[str, ...] = ()
     materialize: tuple[dict[str, Any], ...] = ()
     auth: dict[str, Any] = field(default_factory=dict)
+    hosts: tuple[str, ...] = ()
     hint: str = ""
 
     @property
@@ -107,6 +108,7 @@ PRESETS: dict[str, Preset] = {
             },
         ),
         auth={"scheme": "bearer", "field": "token"},
+        hosts=("api.github.com", "*.github.com", "*.githubusercontent.com"),
         hint="GitHub PAT (ghp_/github_pat_) or fine-grained token",
     ),
     "gitlab": Preset(
@@ -116,6 +118,7 @@ PRESETS: dict[str, Preset] = {
             {"kind": "env", "map": {"GITLAB_TOKEN": "{token}", "GLAB_TOKEN": "{token}"}},
         ),
         auth={"scheme": "header", "header": "PRIVATE-TOKEN", "field": "token"},
+        hosts=("gitlab.com", "*.gitlab.com"),
         hint="GitLab PAT (glpat-)",
     ),
     "npm": Preset(
@@ -130,6 +133,7 @@ PRESETS: dict[str, Preset] = {
             },
         ),
         auth={"scheme": "bearer", "field": "token"},
+        hosts=("registry.npmjs.org", "*.npmjs.org", "*.npmjs.com"),
         hint="npm registry token",
     ),
     "docker": Preset(
@@ -221,6 +225,7 @@ def build_credential(
     env_map: dict[str, str] | None = None,
     refresh: dict[str, Any] | None = None,
     auth: dict[str, Any] | None = None,
+    allowed_hosts: list[str] | None = None,
 ) -> Credential:
     """Validate field coverage and assemble a Credential from a preset."""
     p = preset(provider)
@@ -254,6 +259,11 @@ def build_credential(
     if env_map:
         steps.append({"kind": "env", "map": dict(env_map)})
 
+    if allowed_hosts is not None:
+        hosts = [h.strip().lower() for h in allowed_hosts if h.strip()]
+    else:
+        hosts = list(p.hosts)
+
     # Incomplete optional steps are dropped at plan time; prune empty templates here.
     return Credential(
         name=name,
@@ -262,6 +272,7 @@ def build_credential(
         materialize=steps,
         auth=auth_spec,
         refresh=dict(refresh or {}),
+        allowed_hosts=hosts,
         expires_at=expires_at,
         notes=notes,
         meta={"preset": provider},
