@@ -58,13 +58,14 @@ baton lease new work --ttl 600 --uses 20
 ```
 
 Tools: `baton_contexts`, `baton_credentials`, `baton_lease`, `baton_run`, `baton_http`,
-`baton_leases`, `baton_revoke`, `baton_audit`, `baton_info`.
+`baton_leases`, `baton_revoke`, `baton_refresh`, `baton_audit`, `baton_info`.
 
 Built against **MCP Python SDK 2.x**, where `mcp.server.fastmcp.FastMCP` was replaced by
 `mcp.server.mcpserver.MCPServer` — most tutorials still target the removed import path.
 
-## Providers
+## Providers & Refresh
 
+### Presets
 `aws` · `gcp` · `github` · `gitlab` · `npm` · `docker` · `kube` · `ssh` · `generic`
 
 A provider preset fixes the secret fields, the materialization plan (env vars, ini/json/
@@ -73,6 +74,30 @@ config files, file modes), and the HTTP auth scheme. `baton info` lists them.
 ```bash
 baton cred add kube-prod --provider kube --field-file kubeconfig=~/.kube/config
 baton cred add reg --provider docker --field username --field password --field registry=ghcr.io
+```
+
+### Refresh Providers & OAuth 2.0
+Credentials can be configured with an automated refresh provider so expiring tokens rotate
+seamlessly without exposing refresh tokens or secrets to the model:
+
+- **`oauth2`**: RFC 6749 Section 6 refresh token grant. Supports client basic auth or body auth,
+  automatic refresh token rotation, and expiry calculation (`expires_in`).
+- **`exec` / `command`**: Executes an external command to mint/fetch a fresh token (e.g. CLI
+  helpers), supporting plain text or JSON output paths and TTLs.
+- **Custom hooks**: Registered in Python via `register_refresh_provider(name, handler)`.
+
+Auto-refresh is transparent: when `baton run`, `baton http`, or context planning access an
+expired or expiring credential (within skew), it refreshes in place and persists atomically.
+
+CLI refresh:
+```bash
+# configure an oauth2 refresh on cred creation
+baton cred add api --provider generic --field token --field refresh_token \
+  --refresh-provider oauth2 --refresh-token-url https://auth.example.com/token \
+  --refresh-client-id my-client-id --refresh-client-secret my-secret
+
+# manual on-demand refresh
+baton cred refresh api --force
 ```
 
 ## Crypto
@@ -107,8 +132,6 @@ alone is never enough to decrypt anything.
 ## Honest limits
 
 - Local, single-user, single-machine. There is no network sync or multi-host vault yet.
-- No OAuth refresh flows: credentials are static secrets with expiry metadata. A token
-  that rotates must be re-added (until a refresh provider lands).
 - `baton env --reveal` prints values for the human operator on explicit request; the MCP
   surface has no equivalent.
 - Redaction is value- and pattern-based. It cannot catch a secret the agent was already
@@ -120,6 +143,7 @@ alone is never enough to decrypt anything.
 src/baton/crypto.py       envelope, subkeys, MACs, audit chain
 src/baton/vault.py        encrypted store, leases, audit (thread-safe)
 src/baton/catalog.py      provider presets
+src/baton/refresh.py      refresh provider engine (oauth2, exec, custom hooks)
 src/baton/materialize.py  context → sandbox HOME (env, files, modes)
 src/baton/runner.py       subprocess in isolated HOME + redaction
 src/baton/broker.py       HTTP with attached auth (bearer/header/basic/query/sigv4)
