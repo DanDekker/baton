@@ -98,7 +98,6 @@ def cmd_cred_list(v: Vault, args: argparse.Namespace) -> int:
     if args.json:
         _out(json.dumps(rows, indent=2))
         return 0
-    _out("  NAME  PROVIDER  FIELDS  EXPIRES")
     _table(
         [
             [r["name"], r["provider"], ",".join(r["fields"]), _fmt_expiry(r["expires_at"])]
@@ -245,7 +244,7 @@ def cmd_http(v: Vault, args: argparse.Namespace) -> int:
         args.method,
         args.url,
         service=args.service,
-        json_body=json.loads(args.json) if args.json else None,
+        json_body=json.loads(args.body) if args.body else None,
     )
     _out(f"{resp.status} {resp.url}")
     _out(resp.body)
@@ -310,7 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
     lr = lease_sub.add_parser("revoke", parents=[common])
     lr.add_argument("lease_id")
 
-    run_p = sub.add_parser("run", parents=[common], help="run a command with a context")
+    run_p = sub.add_parser(
+        "run",
+        parents=[common],
+        help="run a command with a context (options go before TARGET, then -- CMD)",
+    )
     run_p.add_argument("target", help="context name or lease token")
     run_p.add_argument("--timeout", type=float)
     run_p.add_argument("--cwd")
@@ -326,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     http_p.add_argument("url")
     http_p.add_argument("--method", default="GET")
     http_p.add_argument("--service")
-    http_p.add_argument("--json")
+    http_p.add_argument("--body", help="JSON request body")
 
     audit_p = sub.add_parser("audit", parents=[common], help="audit trail")
     audit_p.add_argument("--limit", type=int, default=20)

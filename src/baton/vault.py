@@ -300,7 +300,7 @@ class Vault:
     def get_credential(self, name: str) -> Credential:
         row = self.get_credential_row(name)
         if row is None:
-            raise UnknownCredential(name)
+            raise UnknownCredential(f"unknown credential {name!r} (see `baton cred list`)")
         pub = json.loads(row["meta"])
         secret = json.loads(
             crypto.open_envelope(
@@ -387,7 +387,7 @@ class Vault:
     def get_context(self, name: str) -> Context:
         row = self._conn.execute("SELECT * FROM contexts WHERE name=?", (name,)).fetchone()
         if row is None:
-            raise UnknownContext(name)
+            raise UnknownContext(f"unknown context {name!r} (see `baton ctx list`)")
         spec = json.loads(row["spec"])
         return Context(
             name=row["name"],
