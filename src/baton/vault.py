@@ -14,11 +14,13 @@ See `baton.crypto` for the primitive choices. This module is only storage policy
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import secrets
 import sqlite3
 import stat
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -105,6 +107,46 @@ def _hardened_write(path: Path, data: bytes) -> None:
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
+class _LockedConn:
+    """Serializes access to one sqlite connection.
+
+    MCP runs synchronous tool functions on worker threads, so a single Vault is
+    touched from several threads over its lifetime. sqlite refuses that unless
+    check_same_thread=False, and a shared connection still needs serialization.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, sql: str, params: object = ()) -> sqlite3.Cursor:
+        with self._lock:
+            return self._conn.execute(sql, params)
+
+    def executescript(self, script: str) -> sqlite3.Cursor:
+        with self._lock:
+            return self._conn.executescript(script)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+def _atomic(method):
+    """Hold the vault lock for a whole read-modify-write sequence."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class Vault:
     def __init__(
         self,
@@ -116,8 +158,10 @@ class Vault:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir.chmod(0o700)
         self.db_path = self.state_dir / "baton.db"
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        self._conn = _LockedConn(conn, self._lock)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         os.chmod(self.db_path, 0o600)
@@ -208,6 +252,7 @@ class Vault:
     def get_credential_row(self, name: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM credentials WHERE name=?", (name,)).fetchone()
 
+    @_atomic
     def put_credential(self, cred: Credential) -> Credential:
         row = self.get_credential_row(cred.name)
         if row is not None:
@@ -301,6 +346,7 @@ class Vault:
             )
         return out
 
+    @_atomic
     def delete_credential(self, name: str) -> bool:
         cur = self._conn.execute("DELETE FROM credentials WHERE name=?", (name,))
         self._conn.commit()
@@ -309,6 +355,7 @@ class Vault:
         return cur.rowcount > 0
 
     # -------------------------------------------------------------- contexts
+    @_atomic
     def put_context(self, ctx: Context) -> Context:
         row = self._conn.execute(
             "SELECT id, created_at FROM contexts WHERE name=?", (ctx.name,)
@@ -369,6 +416,7 @@ class Vault:
             )
         return out
 
+    @_atomic
     def delete_context(self, name: str) -> bool:
         cur = self._conn.execute("DELETE FROM contexts WHERE name=?", (name,))
         self._conn.commit()
@@ -380,6 +428,7 @@ class Vault:
     def _sign(self, body: str) -> str:
         return crypto.mac_hex(self._k_lease, body.encode(), 32)
 
+    @_atomic
     def issue_lease(
         self,
         context: str,
@@ -448,6 +497,7 @@ class Vault:
             revoked=bool(row["revoked"]),
         )
 
+    @_atomic
     def resolve_lease(self, token: str, consume: bool = True) -> Lease:
         """Verify signature, then DB state (revocation, TTL, use budget)."""
         try:
@@ -474,6 +524,7 @@ class Vault:
             lease.uses += 1
         return lease
 
+    @_atomic
     def revoke_lease(self, lease_id: str) -> bool:
         cur = self._conn.execute("UPDATE leases SET revoked=1 WHERE id=?", (lease_id,))
         self._conn.commit()
@@ -490,6 +541,7 @@ class Vault:
         row = self._conn.execute("SELECT hash FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
         return row["hash"] if row else "00" * 32
 
+    @_atomic
     def audit(
         self,
         lease_id: str | None,
