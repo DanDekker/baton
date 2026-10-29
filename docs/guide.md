@@ -15,7 +15,7 @@ baton keeps credentials on your machine and uses them on an agent's behalf. Thre
 Install with Python 3.10+ and [uv](https://docs.astral.sh/uv/), then add a GitHub token. A bare `--field token` prompts without showing the value or putting it in shell history.
 
 ```bash
-uv tool install git+https://github.com/DanDekker/baton.git
+uv tool install baton-auth
 
 baton cred add gh-work --provider github --field token --context work
 baton ctx list
@@ -115,7 +115,7 @@ Use `--state-dir PATH` to choose another vault directory. `baton env --reveal` p
 
 ## Work on the package
 
-The distribution name is `baton-auth` because `baton` is an unrelated PyPI project. The import name is `baton_auth`. This repository installs the `baton`, `baton-auth`, and `baton-mcp` commands. It is installable from GitHub; a PyPI release has not been published yet.
+The [PyPI package](https://pypi.org/project/baton-auth/) is named `baton-auth` because `baton` is an unrelated project. The import name is `baton_auth`. It installs the `baton`, `baton-auth`, and `baton-mcp` commands. Version tags build and publish the package through GitHub Actions.
 
 ```bash
 uv sync --extra dev
