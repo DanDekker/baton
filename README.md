@@ -34,6 +34,12 @@ baton setup --auto               # connect installed MCP clients
 
 `baton setup --auto` configures detected MCP clients (`cursor`, `claude-desktop`, `windsurf`, `zed`, `vscode`, `muse-code`, `hermes-agent`), or pass `--client CLIENT` (`codex`, `claude-code`, `agents-md`, ...). `baton setup` prints portable MCP config JSON. Agents with command access can use `baton run` or `baton http`.
 
+## Hand work to another agent
+
+Agents on different machines can connect to one broker using paired identities. Each machine keeps its private key; credentials stay at the broker. A recipient accepts a grant from its inbox, uses the permitted APIs, and can hand narrower access plus a task summary to another paired agent. Models and providers do not need their own integrations.
+
+See [remote pairing and handoffs](docs/remote.md) for the setup. Remote access supports HTTPS APIs through CLI or MCP. Shell commands and credential administration stay local.
+
 ## Cryptography at a glance
 
 | Name | How baton uses it |
@@ -50,4 +56,4 @@ baton setup --auto               # connect installed MCP clients
 
 The distribution is named `baton-auth` and also provides the `baton-auth` command. The Python import is `baton_auth`.
 
-baton runs locally for one user on one machine. A temporary `HOME` keeps CLI configuration separate; it is not a full operating-system sandbox.
+The vault stays on the broker machine. A temporary `HOME` keeps local CLI configuration separate; it is not a full operating-system sandbox.

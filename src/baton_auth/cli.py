@@ -317,8 +317,13 @@ def cmd_lease_new(v: Vault, args: argparse.Namespace) -> int:
         services=list(args.service or []),
         ttl=args.ttl,
         max_uses=args.uses,
+        recipient=getattr(args, "to", None),
+        delegatable=getattr(args, "delegate", False),
+        http_methods=getattr(args, "method", None),
+        path_prefixes=getattr(args, "path_prefix", None),
+        task={"summary": getattr(args, "summary", "") or ""},
     )
-    _out(lease.token)
+    _out(json.dumps(lease.public(), indent=2) if lease.recipient else lease.token)
     return 0
 
 
@@ -500,17 +505,23 @@ def cmd_info(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    remote = getattr(args, "remote", None)
+    if remote:
+        from .identity import client_context
+        client_context(args.state_dir, remote)
     if getattr(args, "auto", False) or args.client == "auto":
         if args.output or args.root:
             raise BatonError("--output and --root cannot be used with --auto")
-        paths = integration.setup_detected_clients(args.state_dir)
+        paths = integration.setup_detected_clients(args.state_dir, remote)
         if not paths:
-            _out(json.dumps(integration.mcp_config(args.state_dir), indent=2))
+            _out(json.dumps(integration.mcp_config(args.state_dir, remote=remote), indent=2))
         else:
             for path in paths:
                 _out(f"added baton to {path}")
         return 0
     if args.client == "agents-md":
+        if remote:
+            raise BatonError("use `baton setup --remote NAME` for remote MCP configuration")
         if args.root:
             raise BatonError("--root is only for generic JSON config")
         target = args.output or str(Path.cwd() / "AGENTS.md")
@@ -522,18 +533,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
             raise BatonError("--root is only for generic JSON config")
         if args.client == "muse-code":
             target = args.output or integration.muse_settings_path()
-            path = integration.write_muse_config(target, args.state_dir)
+            path = integration.write_muse_config(target, args.state_dir, remote)
         elif args.client == "zed":
             target = args.output or integration.zed_settings_path()
-            path = integration.write_zed_config(target, args.state_dir)
+            path = integration.write_zed_config(target, args.state_dir, remote)
         else:
             target = args.output or integration.hermes_config_path()
-            path = integration.write_hermes_config(target, args.state_dir)
+            path = integration.write_hermes_config(target, args.state_dir, remote)
         _out(f"added baton to {path}")
     elif args.client in {"codex", "claude-code"}:
         if args.output or args.root:
             raise BatonError("--output and --root apply only to JSON client configs")
-        command = integration.client_command(args.client, args.state_dir)
+        command = integration.client_command(args.client, args.state_dir, remote)
         try:
             subprocess.run(command, check=True)
         except FileNotFoundError as exc:
@@ -546,7 +557,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if args.client != "generic" and args.root:
             raise BatonError("--root is only for generic JSON config")
         root = args.root or ("servers" if args.client == "vscode" else "mcpServers")
-        config = integration.mcp_config(args.state_dir, root)
+        config = integration.mcp_config(args.state_dir, root, remote)
         target = args.output
         if target is None and args.client == "cursor":
             target = str(Path.home() / ".cursor" / "mcp.json")
@@ -561,7 +572,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             _out(f"added baton to {path}")
         else:
             _out(json.dumps(config, indent=2))
-    if "BATON_MASTER_KEY" in os.environ or "BATON_PASSPHRASE" in os.environ:
+    if not remote and ("BATON_MASTER_KEY" in os.environ or "BATON_PASSPHRASE" in os.environ):
         print(
             "baton: your MCP client also needs the vault key environment; "
             "no secret was written to config",
@@ -614,6 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--root", choices=["mcpServers", "servers"], help="JSON key used by your client"
     )
     setup.add_argument("--output", help="merge baton into a client JSON config file")
+    setup.add_argument("--remote", metavar="CONNECTION", help="connect this harness to a paired remote broker")
 
     def _configure_add_parser(ap: argparse.ArgumentParser) -> None:
         ap.add_argument("name", help="credential or provider name (e.g. github, anthropic)")
@@ -710,6 +722,11 @@ def build_parser() -> argparse.ArgumentParser:
     ln.add_argument("--ttl", type=float, default=900.0)
     ln.add_argument("--uses", type=int)
     ln.add_argument("--service", action="append")
+    ln.add_argument("--to", help="bind to a paired agent (remote HTTP access)")
+    ln.add_argument("--delegate", action="store_true", help="allow recipient to delegate narrower child leases")
+    ln.add_argument("--method", action="append", help="allowed remote HTTP method (default: GET and HEAD)")
+    ln.add_argument("--path-prefix", action="append", help="allowed remote URL path subtree")
+    ln.add_argument("--summary", help="task summary for the recipient's inbox")
     lease_list = lease_sub.add_parser("list", parents=[common])
     lease_list.add_argument("--json", action="store_true", help="print JSON")
     lr = lease_sub.add_parser("revoke", parents=[common])
@@ -768,6 +785,8 @@ def build_parser() -> argparse.ArgumentParser:
     audit_p.add_argument("--json", action="store_true", help="print JSON")
 
     sub.add_parser("mcp", parents=[common], help="start the MCP server")
+    from .remote_cli import add_parsers
+    add_parsers(sub, common)
     return p
 
 
@@ -802,13 +821,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "setup":
             return cmd_setup(args)
+        if args.cmd in {"agent", "connect", "grant", "serve", "remote"}:
+            from .remote_cli import execute
+            return execute(args)
         handler = _HANDLERS[(args.cmd, sub)]
         with Vault(state_dir=args.state_dir) as v:
             return handler(v, args)
     except BatonError as exc:
         print(f"baton: {exc}", file=sys.stderr)
         return 1
-    except FileNotFoundError as exc:
+    except OSError as exc:
         print(f"baton: {exc}", file=sys.stderr)
         return 1
 

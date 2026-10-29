@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -27,6 +28,12 @@ from .redact import Redactor
 from .vault import Vault
 
 MAX_BODY = 200_000
+
+_REMOTE_HEADERS = {
+    "accept", "accept-language", "content-type", "if-match", "if-none-match",
+    "if-modified-since", "if-unmodified-since", "idempotency-key", "range",
+    "x-github-api-version", "anthropic-version", "anthropic-beta", "openai-beta",
+}
 
 _SAFE_HEADERS = {
     "content-type",
@@ -59,7 +66,7 @@ def validate_target_url(
     *,
     allow_private: bool = False,
     allow_loopback: bool = True,
-) -> None:
+) -> list[str]:
     """SSRF guard: reject non-http schemes, metadata services, and internal/private IPs."""
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
@@ -79,6 +86,7 @@ def validate_target_url(
     except socket.gaierror as exc:
         raise BrokerError(f"could not resolve host {host!r}: {exc}") from exc
 
+    addresses = []
     for _, _, _, _, sockaddr in addr_infos:
         ip_str = sockaddr[0]
         try:
@@ -103,6 +111,12 @@ def validate_target_url(
 
         if not allow_private and ip.is_private and not ip.is_loopback:
             raise BrokerError(f"SSRF protection: private network address {ip_str} is blocked")
+        if not allow_private and not ip.is_global and not ip.is_loopback:
+            raise BrokerError(f"SSRF protection: non-public address {ip_str} is blocked")
+        addresses.append(ip_str)
+    if not addresses:
+        raise BrokerError("host resolved to no usable addresses")
+    return list(dict.fromkeys(addresses))
 
 
 
@@ -341,18 +355,33 @@ def request(
     timeout: float = 30.0,
     allow_private: bool = False,
     allow_loopback: bool = True,
+    recipient: str | None = None,
 ) -> HttpResponse:
-    validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
+    if recipient is not None:
+        if not target:
+            raise LeaseError("remote requests require a recipient-bound lease")
+        allow_private = allow_loopback = False
+    addresses = None
+    if recipient is None:
+        validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
     lease = None
-    if target and target.startswith("btn_"):
-        lease = vault.resolve_lease(target)
-        if service is not None and not lease.allows(service):
+    if recipient is not None or (target and target.startswith("btn_")):
+        lease = vault.resolve_lease(target, consume=recipient is None, recipient=recipient)
+        if recipient is None and service is not None and not lease.allows(service):
             raise LeaseError(f"lease does not grant {service!r}")
         context_name: str | None = lease.context
     else:
         context_name = target
 
-    ctx = vault.resolve_context(context_name)
+    if recipient is not None:
+        from .models import Context
+        ctx = Context(name=lease.context, credentials=list(lease.credential_ids))
+        for name, credential_id in lease.credential_ids.items():
+            row = vault.get_credential_row(name)
+            if row is None or row["id"] != credential_id:
+                raise LeaseError("a granted credential was removed or replaced")
+    else:
+        ctx = vault.resolve_context(context_name)
     context_name = ctx.name
     if not ctx.credentials:
         raise BrokerError(f"context {context_name} has no credentials")
@@ -368,8 +397,19 @@ def request(
     else:
         candidates = ctx.credentials
     cred_name = _pick_credential_name(vault, candidates, service, url=url)
+    if recipient is not None:
+        from .delegation import check_http
+        check_http(lease, method.upper(), url, cred_name)
+        addresses = validate_target_url(url, allow_private=False, allow_loopback=False)
     cred = vault.get_credential(cred_name, auto_refresh=True)
     validate_credential_host(cred, url, allow_loopback=allow_loopback)
+
+    if recipient is not None:
+        if any(k.lower() not in _REMOTE_HEADERS for k in (headers or {})):
+            raise BrokerError("header is not permitted for remote requests")
+        headers = {k.lower(): v for k, v in (headers or {}).items()}
+        headers.pop(str(cred.auth.get("header", "")).lower(), None)
+        headers["accept-encoding"] = "identity"
 
     payload = body if body is not None else b""
     if json_body is not None:
@@ -386,16 +426,49 @@ def request(
 
     # A redirect destination has not passed the SSRF guard. Return the 3xx
     # response so the caller can explicitly make a separately validated request.
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        resp = client.request(method.upper(), url, headers=final_headers, content=payload or None)
+    bytes_truncated = False
+    if recipient is None:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            resp = client.request(method.upper(), url, headers=final_headers, content=payload or None)
+        raw = resp.text
+    else:
+        # Pin the validated address; SNI and Host retain the authorized HTTPS origin.
+        # No proxy environment, DNS re-resolution, redirects, or unbounded body buffering.
+        parsed = httpx.URL(url)
+        pinned = parsed.copy_with(host=addresses[0])
+        final_headers["Host"] = parsed.netloc.decode("ascii")
+        vault.resolve_lease(target, recipient=recipient)
+        deadline = time.monotonic() + min(timeout, 30.0)
+        with httpx.Client(timeout=min(timeout, 10.0), follow_redirects=False, trust_env=False) as client:
+            with client.stream(method.upper(), pinned, headers=final_headers, content=payload or None,
+                               extensions={"sni_hostname": parsed.host}) as resp:
+                if resp.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise BrokerError("remote upstream must support identity content encoding")
+                data = bytearray()
+                for chunk in resp.iter_raw():
+                    if time.monotonic() > deadline:
+                        raise BrokerError("remote upstream response deadline exceeded")
+                    data.extend(chunk[:MAX_BODY + 1 - len(data)])
+                    if len(data) > MAX_BODY:
+                        break
+                bytes_truncated = len(data) > MAX_BODY
+                raw = data.decode("utf-8", errors="replace")
 
     # Query auth percent-encodes values. Echoes in bodies or Location headers
     # need to be scrubbed in both their original and wire representations.
     secret_values = list(cred.secret.values())
+    auth_header = next((value for key, value in final_headers.items() if key.lower() == "authorization"), "")
+    if auth_header:
+        secret_values.extend((auth_header, auth_header.partition(" ")[2]))
     redactor = Redactor([*secret_values, *(quote(value, safe="") for value in secret_values)])
-    raw = resp.text
-    truncated = len(raw) > MAX_BODY
-    clean, hits = redactor.redact_counted(raw[:MAX_BODY])
+    truncated = bytes_truncated or len(raw) > MAX_BODY
+    clean, hits = redactor.redact_counted(raw)
+    if bytes_truncated:
+        # A final partial secret cannot match the full known value. Drop enough
+        # of the already-redacted tail to cover every supported representation.
+        tail = max((len(quote(value, safe="")) * 2 for value in secret_values), default=0)
+        clean = clean[:-tail] if tail else clean
+    clean = clean[:MAX_BODY]
     safe_headers = {
         k: v for k, v in resp.headers.items() if k.lower() in _SAFE_HEADERS
     }
@@ -409,7 +482,7 @@ def request(
 
     vault.audit(
         lease.id if lease else None,
-        None,
+        recipient,
         "http",
         f"{method.upper()} {urlparse(url).netloc}{urlparse(url).path}",
         resp.is_success,

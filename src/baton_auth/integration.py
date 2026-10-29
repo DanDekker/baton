@@ -14,28 +14,29 @@ from .models import BatonError
 from .vault import default_state_dir
 
 
-def mcp_entry(state_dir: str | None = None) -> dict[str, Any]:
+def mcp_entry(state_dir: str | None = None, remote: str | None = None) -> dict[str, Any]:
     """Use the Python environment that is running baton, not a PATH guess."""
     vault_dir = Path(state_dir).expanduser() if state_dir else default_state_dir()
     return {
         "command": sys.executable,
-        "args": ["-m", "baton_auth.mcp_server"],
+        "args": (["-m", "baton_auth.remote_mcp", "--connection", remote]
+                 if remote else ["-m", "baton_auth.mcp_server"]),
         "env": {"BATON_STATE_DIR": str(vault_dir.resolve())},
     }
 
 
-def mcp_config(state_dir: str | None = None, root: str = "mcpServers") -> dict[str, Any]:
+def mcp_config(state_dir: str | None = None, root: str = "mcpServers", remote: str | None = None) -> dict[str, Any]:
     if root not in {"mcpServers", "servers"}:
         raise BatonError(f"unsupported MCP config root {root!r}")
-    entry = mcp_entry(state_dir)
+    entry = mcp_entry(state_dir, remote)
     if root == "servers":
         entry = {"type": "stdio", **entry}
     return {root: {"baton": entry}}
 
 
-def client_command(client: str, state_dir: str | None = None) -> list[str]:
+def client_command(client: str, state_dir: str | None = None, remote: str | None = None) -> list[str]:
     """Use a client's own CLI for formats that are not JSON."""
-    entry = mcp_entry(state_dir)
+    entry = mcp_entry(state_dir, remote)
     state_arg = f"BATON_STATE_DIR={entry['env']['BATON_STATE_DIR']}"
     if client == "codex":
         return [
@@ -65,7 +66,7 @@ def muse_settings_path() -> Path:
     return base / "muse" / "settings.json"
 
 
-def write_muse_config(path: str | Path, state_dir: str | None = None) -> Path:
+def write_muse_config(path: str | Path, state_dir: str | None = None, remote: str | None = None) -> Path:
     """Write the Muse Code settings shape, including its required schema version."""
     target = Path(path).expanduser()
     current = _read_json_object(target)
@@ -76,7 +77,7 @@ def write_muse_config(path: str | Path, state_dir: str | None = None) -> Path:
     current["schema_version"] = 1
     root = "mcp_servers" if "mcp_servers" in current else "mcpServers"
     type_key = "transport" if root == "mcp_servers" else "type"
-    entry = {type_key: "stdio", **mcp_entry(state_dir), "enabled": True}
+    entry = {type_key: "stdio", **mcp_entry(state_dir, remote), "enabled": True}
     _merge_server(current, root, entry, target)
     _atomic_write(target, json.dumps(current, indent=2) + "\n")
     return target
@@ -108,11 +109,11 @@ def zed_settings_path() -> Path:
     return base / "zed" / "settings.json"
 
 
-def write_zed_config(path: str | Path, state_dir: str | None = None) -> Path:
+def write_zed_config(path: str | Path, state_dir: str | None = None, remote: str | None = None) -> Path:
     """Merge baton into Zed's context_servers settings object."""
     target = Path(path).expanduser()
     current = _read_json_object(target)
-    _merge_server(current, "context_servers", mcp_entry(state_dir), target)
+    _merge_server(current, "context_servers", mcp_entry(state_dir, remote), target)
     _atomic_write(target, json.dumps(current, indent=2) + "\n")
     return target
 
@@ -153,7 +154,7 @@ def write_agent_instructions(path: str | Path = "AGENTS.md") -> Path:
     return target
 
 
-def setup_detected_clients(state_dir: str | None = None) -> list[Path]:
+def setup_detected_clients(state_dir: str | None = None, remote: str | None = None) -> list[Path]:
     """Detect installed MCP clients by config directory and configure each one."""
     configured: list[Path] = []
     json_clients = [
@@ -164,17 +165,17 @@ def setup_detected_clients(state_dir: str | None = None) -> list[Path]:
     ]
     for target, root, present in json_clients:
         if present:
-            configured.append(write_mcp_config(target, mcp_config(state_dir, root)))
+            configured.append(write_mcp_config(target, mcp_config(state_dir, root, remote)))
     if zed_settings_path().parent.is_dir():
-        configured.append(write_zed_config(zed_settings_path(), state_dir))
+        configured.append(write_zed_config(zed_settings_path(), state_dir, remote))
     if muse_settings_path().parent.is_dir():
-        configured.append(write_muse_config(muse_settings_path(), state_dir))
+        configured.append(write_muse_config(muse_settings_path(), state_dir, remote))
     if hermes_config_path().parent.is_dir():
-        configured.append(write_hermes_config(hermes_config_path(), state_dir))
+        configured.append(write_hermes_config(hermes_config_path(), state_dir, remote))
     return configured
 
 
-def write_hermes_config(path: str | Path, state_dir: str | None = None) -> Path:
+def write_hermes_config(path: str | Path, state_dir: str | None = None, remote: str | None = None) -> Path:
     """Round-trip Hermes YAML so comments and other settings survive setup."""
     from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
@@ -203,7 +204,7 @@ def write_hermes_config(path: str | Path, state_dir: str | None = None) -> Path:
         servers["baton"] = server
     if not isinstance(server, dict):
         raise BatonError(f"baton in {target} must be a mapping")
-    entry = mcp_entry(state_dir)
+    entry = mcp_entry(state_dir, remote)
     for old_key in ("url", "headers", "auth", "transport"):
         server.pop(old_key, None)
     server["command"] = entry["command"]

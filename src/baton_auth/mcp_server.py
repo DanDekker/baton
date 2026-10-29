@@ -55,6 +55,13 @@ credential itself and you have leaked it. Leases expire, carry a use budget, and
 are revocable with baton_revoke(). Every use is recorded in a hash-chained audit
 log (baton_audit).
 
+For agents on other machines, pair their identities first and use
+baton_lease(recipient=..., services=...) to send a recipient-bound grant to their
+inbox. Remote recipients authenticate with their own local private key, accept
+the grant, and can delegate narrower child leases only when delegatable=True.
+This local server is an administrative interface; remote agents use the
+separate restricted remote_mcp adapter.
+
 If there are no contexts, ask the human to add a credential in their terminal
 with `baton cred add NAME --provider SERVICE --field token --context CONTEXT`.
 Never ask them to paste a secret into chat. Custom service names work too.
@@ -91,10 +98,17 @@ def build(vault: Vault) -> MCPServer:
     def baton_credentials() -> dict[str, Any]:
         return {"credentials": vault.list_credentials()}
 
+    @server.tool(description="List paired agent identities for recipient-bound grants (local administration).")
+    @_surfaces_errors
+    def baton_agents() -> dict[str, Any]:
+        rows = vault._conn.execute("SELECT id,name,revoked FROM agents ORDER BY name").fetchall()
+        return {"agents": [dict(row) for row in rows]}
+
     @server.tool(
         description="Issue a lease: a signed, expiring handle to a context or credential. "
         "Pass the returned token to other agents instead of credentials. Empty services "
-        "means all services in the context are allowed."
+        "means all services in the context are allowed. Set recipient to a paired agent "
+        "for a bound remote HTTP grant; this returns a public ID instead of a bearer token."
     )
     @_surfaces_errors
     def baton_lease(
@@ -103,6 +117,10 @@ def build(vault: Vault) -> MCPServer:
         ttl_seconds: int = 900,
         services: list[str] | None = None,
         max_uses: int | None = None,
+        recipient: str | None = None,
+        delegatable: bool = False,
+        http_methods: list[str] | None = None,
+        path_prefixes: list[str] | None = None,
     ) -> dict[str, Any]:
         lease = vault.issue_lease(
             context=context or None,
@@ -110,8 +128,12 @@ def build(vault: Vault) -> MCPServer:
             services=services or [],
             ttl=float(ttl_seconds),
             max_uses=max_uses,
+            recipient=recipient,
+            delegatable=delegatable,
+            http_methods=http_methods,
+            path_prefixes=path_prefixes,
         )
-        return {"token": lease.token, **lease.public()}
+        return lease.public() if lease.recipient else {"token": lease.token, **lease.public()}
 
     @server.tool(
         description="Run a command with a context or credential's auth materialized into a "
