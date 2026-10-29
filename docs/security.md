@@ -11,7 +11,7 @@ baton keeps stored credential values away from MCP tools. Agents can see context
 | Vault | Credential records are encrypted and tied to their record identity. The database file alone cannot decrypt them. |
 | Leases | Handles expire, can be revoked or limited by service and use count, and are stored only as token digests. |
 | CLI commands | Each run gets a temporary `0700` home with its context's auth files. Common inherited code injection variables are removed. |
-| HTTP requests | baton attaches bearer, header, basic, query, or AWS SigV4 auth. It rejects disallowed URL schemes, metadata endpoints, link-local addresses, and private networks by default. Redirects are returned without being followed. |
+| HTTP requests | baton attaches bearer, header, basic, query, or AWS SigV4 auth. Preset and `--allow-host` credentials are bound to their allowed domains. baton rejects disallowed URL schemes, metadata endpoints, link-local addresses, and private networks by default. Redirects are returned without being followed. |
 | Results | Known secret values and common provider token patterns are redacted before a broker result is returned. |
 | Audit | Actions are recorded in a BLAKE3 hash chain. SQLite uses WAL and atomic lease use updates. |
 
