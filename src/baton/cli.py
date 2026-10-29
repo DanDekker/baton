@@ -284,6 +284,8 @@ def cmd_http(v: Vault, args: argparse.Namespace) -> int:
         args.url,
         service=args.service,
         json_body=json.loads(args.body) if args.body else None,
+        allow_private=args.allow_private,
+        allow_loopback=not args.disallow_loopback,
     )
     _out(f"{resp.status} {resp.url}")
     _out(resp.body)
@@ -381,6 +383,16 @@ def build_parser() -> argparse.ArgumentParser:
     http_p.add_argument("--method", default="GET")
     http_p.add_argument("--service")
     http_p.add_argument("--body", help="JSON request body")
+    http_p.add_argument(
+        "--allow-private",
+        action="store_true",
+        help="allow requests to private RFC1918/RFC4193 subnets",
+    )
+    http_p.add_argument(
+        "--disallow-loopback",
+        action="store_true",
+        help="block requests to loopback/localhost",
+    )
 
     audit_p = sub.add_parser("audit", parents=[common], help="audit trail")
     audit_p.add_argument("--limit", type=int, default=20)
