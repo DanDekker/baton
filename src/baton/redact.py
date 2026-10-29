@@ -13,14 +13,19 @@ from collections.abc import Iterable
 # Provider token shapes worth catching even when we did not mint them.
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("aws-akid", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("github", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
-    ("gitlab", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}")),
-    ("slack", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}")),
-    ("openai", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}")),
-    ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}")),
+    ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{82}\b")),
+    ("github", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("gitlab", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b")),
+    ("slack", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}\b")),
+    ("openai-proj", re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{48,}\b")),
+    ("openai", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
+    ("anthropic-api", re.compile(r"\bsk-ant-api03-[A-Za-z0-9_\-]{86}\b")),
+    ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
     ("google-api", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
-    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
+    ("stripe", re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")),
 ]
 
 MIN_LEN = 8
@@ -53,6 +58,10 @@ class Redactor:
         values.sort(key=len, reverse=True)
         self._values = values
         self._marker = marker
+        if values:
+            self._literal_pattern = re.compile("|".join(re.escape(v) for v in values))
+        else:
+            self._literal_pattern = None
 
     def __call__(self, text: str) -> str:
         return self.redact(text)
@@ -66,10 +75,9 @@ class Redactor:
             return text, 0
         out = text
         hits = 0
-        for v in self._values:
-            if v and v in out:
-                hits += out.count(v)
-                out = out.replace(v, self._marker)
+        if self._literal_pattern is not None:
+            out, n = self._literal_pattern.subn(self._marker, out)
+            hits += n
         for name, pat in _PATTERNS:
             out, n = pat.subn(f"{self._marker}[{name}]", out)
             hits += n
