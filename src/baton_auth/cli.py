@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, broker, catalog, integration, runner
+from . import __version__, broker, catalog, importer, integration, runner
 from .materialize import plan
 from .models import BatonError, Context, Credential, UnknownContext
 from .redact import Redactor
@@ -216,6 +216,28 @@ def cmd_cred_rm(v: Vault, args: argparse.Namespace) -> int:
     removed = v.delete_credential(args.name)
     _out("deleted" if removed else "not found")
     return 0 if removed else 1
+
+
+def cmd_cred_import(v: Vault, args: argparse.Namespace) -> int:
+    cred = importer.import_credential(
+        args.provider,
+        name=args.name,
+        profile=args.profile,
+        from_path=args.from_path,
+        from_env=args.from_env,
+    )
+    v.put_credential(cred)
+    _out(f"imported {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
+    if args.context:
+        try:
+            ctx = v.get_context(args.context)
+        except UnknownContext:
+            ctx = Context(name=args.context)
+        if cred.name not in ctx.credentials:
+            ctx.credentials.append(cred.name)
+            v.put_context(ctx)
+        _out(f"context {ctx.name}: {', '.join(ctx.credentials)}")
+    return 0
 
 
 def cmd_ctx_add(v: Vault, args: argparse.Namespace) -> int:
@@ -542,6 +564,19 @@ def build_parser() -> argparse.ArgumentParser:
     crf.add_argument("--skew", type=float, default=60.0, help="expiry skew in seconds")
     r = cred_sub.add_parser("rm", parents=[common])
     r.add_argument("name")
+    imp = cred_sub.add_parser(
+        "import",
+        parents=[common],
+        help="import an existing local CLI login or environment token",
+        description="Import an existing credential from local CLI config or environment.",
+        epilog="Example: baton cred import github --context work",
+    )
+    imp.add_argument("provider", help="provider name (github, aws, npm, kube, docker, ...)")
+    imp.add_argument("--name", help="credential name in vault (default: provider name)")
+    imp.add_argument("--context", help="create or update this context with the credential")
+    imp.add_argument("--profile", default="default", help="AWS profile or Docker registry")
+    imp.add_argument("--from-path", help="path to config or token file")
+    imp.add_argument("--from-env", help="environment variable holding the token")
 
     ctx = sub.add_parser("ctx", parents=[common], help="group credentials into contexts")
     ctx_sub = ctx.add_subparsers(dest="ctx_cmd", required=True)
@@ -630,6 +665,7 @@ _HANDLERS = {
     ("status", None): cmd_status,
     ("info", None): cmd_info,
     ("cred", "add"): cmd_cred_add,
+    ("cred", "import"): cmd_cred_import,
     ("cred", "list"): cmd_cred_list,
     ("cred", "refresh"): cmd_cred_refresh,
     ("cred", "rm"): cmd_cred_rm,

@@ -349,3 +349,43 @@ def test_cli_json_outputs_and_http_headers(env, monkeypatch, capsys):
     http_out = json.loads(capsys.readouterr().out)
     assert http_out["status"] == 200
     assert seen_headers["X-Custom"] == "hello"
+
+
+def test_cred_import_from_files_and_env(env, tmp_path, monkeypatch, capsys):
+    aws_dir = tmp_path / ".aws"
+    aws_dir.mkdir()
+    aws_creds = aws_dir / "credentials"
+    aws_creds.write_text(
+        "[work]\naws_access_key_id = AKIA" + "W" * 16 + "\naws_secret_access_key = " + "s" * 40 + "\n"
+    )
+    assert main([
+        "cred", "import", "aws",
+        "--name", "aws-work",
+        "--profile", "work",
+        "--from-path", str(aws_creds),
+        "--context", "work",
+        "--state-dir", str(env),
+    ]) == 0
+
+    gh_hosts = tmp_path / "hosts.yml"
+    gh_hosts.write_text("github.com:\n    oauth_token: ghp_" + "h" * 36 + "\n    user: octo\n")
+    assert main([
+        "cred", "import", "github",
+        "--from-path", str(gh_hosts),
+        "--context", "work",
+        "--state-dir", str(env),
+    ]) == 0
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-" + "z" * 86)
+    assert main([
+        "cred", "import", "anthropic",
+        "--context", "work",
+        "--state-dir", str(env),
+    ]) == 0
+
+    with Vault(state_dir=env) as vault:
+        assert vault.get_credential("aws-work").secret["access_key_id"].startswith("AKIA")
+        assert vault.get_credential("github").secret["user"] == "octo"
+        assert vault.get_credential("anthropic").secret["token"].startswith("sk-ant-api03-")
+        assert vault.get_context("work").credentials == ["aws-work", "github", "anthropic"]
+    capsys.readouterr()
