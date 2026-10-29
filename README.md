@@ -1,51 +1,56 @@
-# baton
+<div align="center">
 
-Auth contexts for agents. **Pass the baton, never the secret.**
+<img src="assets/baton-banner.svg" alt="baton — Auth contexts for agents. Pass the baton, never the secret." width="100%">
+<p><strong>Local vault · Signed leases · Isolated CLI homes · Brokered HTTP</strong></p>
+<p><a href="#quick-start">Quick start</a> · <a href="#mcp-integration">MCP integration</a> · <a href="#security-model">Security model</a> · <a href="#limits">Limits</a></p>
 
-An agent that pastes an API key into a tool call has leaked it into the transcript,
-the logs, and every later context window. baton gives agents a different primitive: a
-*lease* — a signed, expiring, revocable handle to a bundle of credentials that is only
-ever resolved on the broker side of the wall.
+</div>
 
+---
+
+Agents need to use credentials. They do not need to see them. baton keeps secrets in an encrypted local vault and gives agents short-lived, revocable **leases** to named auth contexts. The broker applies credentials to commands and HTTP requests, then redacts known secrets from the output.
+
+```text
+encrypted credential → named context → signed lease
+                                      ├─ run  → temporary HOME → redacted output
+                                      └─ http → attached auth  → redacted response
 ```
-credential ──► context ──► lease ──► run / http
- (encrypted)   (named bundle)  (signed handle)   (auth applied out of band)
-```
 
-## Why this exists
+| The problem | The baton approach |
+| --- | --- |
+| A tool returns an API key, placing it in a transcript or log. | Tools return metadata and lease handles. Credential values stay in the broker. |
+| Agents share a machine and overwrite each other's CLI auth files. | Each run gets a temporary `HOME` with only that context's auth material. |
+| Long-lived credentials are handed from agent to agent. | Leases expire, can be scoped to services and use counts, and can be revoked. |
 
-Two problems, one mechanism:
+## Quick start
 
-1. **Secrets in model context.** Any MCP tool that returns a token has made the agent a
-   custodian of it. Injection, transcript leaks, and log scraping all follow. Here, no
-   tool returns a value — `baton_run` and `baton_http` *use* the credential and hand
-   back only output, scrubbed.
-2. **One machine, many auths.** CLI auth is not one env var: it is `~/.aws/credentials`,
-   `~/.config/gh/hosts.yml`, `~/.kube/config`, `.npmrc`, `.docker/config.json`. Agents
-   sharing a real `$HOME` overwrite each other. baton materializes a context into a
-   throwaway sandbox `$HOME`, so `--ctx aws-prod` and `--ctx aws-staging` run side by
-   side without touching the host or each other.
-
-## Quickstart
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
+source .venv/bin/activate
 
-# store a credential (prompts hidden; never pass secrets as argv)
+# Prompts for the token without putting its value in shell history.
 baton cred add gh-work --provider github --field token
 
-# group credentials into a named auth situation
+# Bundle credentials into a named auth context.
 baton ctx add work --cred gh-work
 
-# use it — the child gets an isolated HOME with only this context
+# Run a CLI with this context's auth in a temporary HOME.
 baton run work -- gh api /user
-baton run work -- sh -c 'echo $GH_TOKEN'   # → «baton:redacted»
 
-# hand auth to another agent without handing over the key
+# Or make an HTTP request with auth attached by the broker.
+baton http work https://api.github.com/user
+
+# Delegate access with a 10-minute, 20-use lease.
 baton lease new work --ttl 600 --uses 20
 ```
 
-## MCP server
+If a command prints the stored token, baton replaces it with `«baton:redacted»` in the returned output. Secret values should be entered through hidden `--field` prompts or `--field-file`, not as command arguments.
+
+## MCP integration
+
+Point your MCP client at the installed server:
 
 ```json
 {
@@ -57,100 +62,97 @@ baton lease new work --ttl 600 --uses 20
 }
 ```
 
-Tools: `baton_contexts`, `baton_credentials`, `baton_lease`, `baton_run`, `baton_http`,
-`baton_leases`, `baton_revoke`, `baton_refresh`, `baton_audit`, `baton_info`.
+| Workflow | Tools |
+| --- | --- |
+| Inspect metadata | `baton_info`, `baton_contexts`, `baton_credentials` |
+| Delegate and revoke | `baton_lease`, `baton_leases`, `baton_revoke` |
+| Use a context | `baton_run`, `baton_http` |
+| Maintain and inspect | `baton_refresh`, `baton_audit` |
 
-Built against **MCP Python SDK 2.x**, where `mcp.server.fastmcp.FastMCP` was replaced by
-`mcp.server.mcpserver.MCPServer` — most tutorials still target the removed import path.
+The MCP surface does not return credential values. `baton_run` and `baton_http` use credentials inside the broker and return redacted results. The server targets MCP Python SDK 2.x.
 
-## Providers & Refresh
+## Providers and refresh
 
-### Presets
-`aws` · `gcp` · `github` · `gitlab` · `npm` · `docker` · `kube` · `ssh` · `generic`
+**Built-in presets:** `aws` · `gcp` · `github` · `gitlab` · `npm` · `docker` · `kube` · `ssh` · `generic`
 
-A provider preset fixes the secret fields, the materialization plan (env vars, ini/json/
-config files, file modes), and the HTTP auth scheme. `baton info` lists them.
+A preset defines expected fields, how auth is materialized for CLIs, and how it is attached to HTTP requests. Run `baton info` to inspect the available presets.
 
 ```bash
 baton cred add kube-prod --provider kube --field-file kubeconfig=~/.kube/config
-baton cred add reg --provider docker --field username --field password --field registry=ghcr.io
+baton cred add registry --provider docker \
+  --field username --field password --field registry=ghcr.io
 ```
 
-### Refresh Providers & OAuth 2.0
-Credentials can be configured with an automated refresh provider so expiring tokens rotate
-seamlessly without exposing refresh tokens or secrets to the model:
+Credentials can refresh automatically when they are expired or close to expiry. Built-in options include OAuth 2.0 refresh tokens and external commands; Python integrations can register custom handlers with `register_refresh_provider(name, handler)`. OAuth refresh supports token rotation and `expires_in`.
 
-- **`oauth2`**: RFC 6749 Section 6 refresh token grant. Supports client basic auth or body auth,
-  automatic refresh token rotation, and expiry calculation (`expires_in`).
-- **`exec` / `command`**: Executes an external command to mint/fetch a fresh token (e.g. CLI
-  helpers), supporting plain text or JSON output paths and TTLs.
-- **Custom hooks**: Registered in Python via `register_refresh_provider(name, handler)`.
-
-Auto-refresh is transparent: when `baton run`, `baton http`, or context planning access an
-expired or expiring credential (within skew), it refreshes in place and persists atomically.
-
-CLI refresh:
 ```bash
-# configure an oauth2 refresh on cred creation
-baton cred add api --provider generic --field token --field refresh_token \
-  --refresh-provider oauth2 --refresh-token-url https://auth.example.com/token \
-  --refresh-client-id my-client-id --refresh-client-secret my-secret
+# Bare fields prompt for values, including the client secret.
+baton cred add api --provider generic \
+  --field token --field refresh_token --field client_secret \
+  --refresh-provider oauth2 \
+  --refresh-token-url https://auth.example.com/token \
+  --refresh-client-id my-client-id
 
-# manual on-demand refresh
 baton cred refresh api --force
 ```
 
-## Crypto
+## Security model
 
-| Purpose | Primitive | Why |
-| --- | --- | --- |
-| Record encryption | **AES-256-GCM-SIV** (RFC 8452) | nonce-misuse resistant and *key-committing*, unlike AES-GCM |
-| Key commitment | **BLAKE3** keyed tag over header‖AAD‖ct | structural, not emergent — kills partitioning-oracle/multi-key confusion |
-| Subkeys | **BLAKE3** `derive_key`, one domain per purpose | no key reuse across storage/lease/audit/commit |
-| Lease MACs, audit chain | **BLAKE3** keyed mode | a real PRF, faster than HMAC-SHA256, 128-bit truncated |
-| Passphrase mode | **Argon2id** (m=64 MiB, t=3, p=4) | memory-hard, well above the OWASP floor |
-| At-rest AAD | `cred:<id>:<name>` | ciphertext cannot be relocated between records |
+| Layer | Control |
+| --- | --- |
+| Storage | Authenticated encryption with record identity as associated data, plus a BLAKE3 keyed commitment. |
+| Delegation | Signed leases with expiry, revocation, optional service scope, and an atomic use budget. Only a token digest is stored. |
+| Execution | Context-specific files and environment variables are written into a temporary `0700` home; dangerous inherited injection variables are removed. |
+| HTTP | The broker attaches bearer, header, basic, query, or AWS SigV4 auth. It rejects disallowed schemes, metadata endpoints, link-local addresses, and private networks by default. Redirects are returned for separate validation. |
+| Output | Known credential values and recognized provider token shapes are redacted before broker results are returned. |
+| Audit | Credential use and administrative actions are recorded in a BLAKE3 hash chain. SQLite uses WAL and atomic lease updates. |
 
-SigV4 uses SHA-256 because the AWS specification fixes it; everything else is BLAKE3.
+The master seed is resolved in this order: `BATON_MASTER_KEY` → `BATON_PASSPHRASE` with Argon2id → OS keyring → a `0600` keyfile. The database alone is not sufficient to decrypt stored credentials. Mutable key buffers are wiped when the vault closes.
 
-Master seed resolution order: `BATON_MASTER_KEY` → `BATON_PASSPHRASE` (Argon2id) → OS
-keyring (Keychain / Secret Service / Credential Locker) → `0600` keyfile. The database
-alone is never enough to decrypt anything.
+<details>
+<summary>Cryptographic construction</summary>
 
-## Security properties & Hardening
+| Purpose | Primitive |
+| --- | --- |
+| Record encryption | AES-256-GCM-SIV (RFC 8452) when available; ChaCha20-Poly1305 fallback |
+| Explicit envelope commitment | BLAKE3 keyed tag over header, associated data, and ciphertext |
+| Subkeys | BLAKE3 `derive_key`, separated by purpose |
+| Lease MACs and audit chain | BLAKE3 keyed mode |
+| Passphrase derivation | Argon2id, 64 MiB memory, 3 iterations, parallelism 4 |
+| Record identity | Associated data `cred:<id>:<name>` |
 
-- **No secrets in model context**: No MCP tool returns a credential value. Enforced by construction, not convention.
-- **In-memory zeroization**: Sensitive master keys, derived subkeys, and secret buffers are wiped using `ctypes.memset` upon vault close or teardown to prevent memory dumping.
-- **Race-free atomic lease budget**: Single-use or budgeted leases are conditionally updated in SQLite (`uses < max_uses AND revoked=0`), preventing multi-threaded concurrency race conditions and over-use.
-- **High-concurrency SQLite**: Configured with Write-Ahead Logging (`WAL`), `synchronous=NORMAL`, and busy timeouts for smooth concurrent multi-agent access without lock contention.
-- **Strict sandbox isolation**: Sandbox homes are created `0700` and cleaned up on exit. Ambient host secrets and code-injection vectors (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `PYTHONPATH`, `NODE_OPTIONS`, `BASH_ENV`) are strictly scrubbed from child process environments unless explicitly allowed via context passthrough.
-- **SSRF guard & metadata protection**: Outbound brokered HTTP requests reject non-http schemes, cloud instance metadata endpoints (`169.254.169.254`, `metadata.google.internal`), link-local IPs, and private networks (RFC 1918/4193) by default. Redirects are returned without following them, so each destination needs its own validation. Configurable via `--allow-private` and `--disallow-loopback`.
-- **Fast token redactor**: Known secret literals are scrubbed first; provider token patterns run only when their prefixes appear in the output (`AKIA…`, `ghp_…`, `github_pat_…`, `sk-ant-api03-…`, `sk-proj-…`, `hf_…`, `sk_live_…`, JWTs, OpenSSH/EC private keys).
-- **Tamper-evident audit chain**: The audit log is an authenticated BLAKE3 hash chain over every column (`baton audit`).
-- **Secretless lease handles**: Lease tokens are stored only as a BLAKE3 digest; the token itself is never stored at rest.
+AWS SigV4 uses SHA-256 as required by that protocol.
 
-## Honest limits
+</details>
 
-- Local, single-user, single-machine. There is no network sync or multi-host vault yet.
-- `baton env --reveal` prints values for the human operator on explicit request; the MCP
-  surface has no equivalent.
-- Redaction is value- and pattern-based. It cannot catch a secret the agent was already
-  given by some other tool.
+## Limits
 
-## Layout
+- baton is local to one user and one machine. It does not sync vaults between hosts.
+- A temporary `HOME` isolates CLI configuration; it is not an operating-system sandbox. Child processes retain their normal filesystem permissions.
+- Redaction covers known values and recognized token shapes. It cannot recover a secret already exposed to an agent elsewhere.
+- HTTP hostname checks happen before the connection. For untrusted destinations, pair baton with network-level egress controls.
+- `baton env --reveal` prints values only when explicitly requested by the operator. There is no MCP equivalent.
 
+## Development
+
+```bash
+uv sync --extra dev
+.venv/bin/python -m pytest tests -q
 ```
-src/baton/crypto.py       envelope, subkeys, MACs, audit chain
-src/baton/vault.py        encrypted store, leases, audit (thread-safe)
+
+<details>
+<summary>Project map</summary>
+
+```text
+src/baton/crypto.py       envelopes, subkeys, MACs, audit chain
+src/baton/vault.py        encrypted store, leases, audit
 src/baton/catalog.py      provider presets
-src/baton/refresh.py      refresh provider engine (oauth2, exec, custom hooks)
-src/baton/materialize.py  context → sandbox HOME (env, files, modes)
-src/baton/runner.py       subprocess in isolated HOME + redaction
-src/baton/broker.py       HTTP with attached auth (bearer/header/basic/query/sigv4)
+src/baton/refresh.py      OAuth, command, and custom refresh handlers
+src/baton/materialize.py  context → temporary HOME
+src/baton/runner.py       subprocess execution and redaction
+src/baton/broker.py       brokered HTTP and auth attachment
 src/baton/mcp_server.py   MCP tools
 src/baton/cli.py          operator CLI
 ```
 
-```bash
-.venv/bin/python -m pytest tests -q
-```
+</details>
