@@ -150,6 +150,9 @@ def _payload(result: object) -> dict:
 
 
 def test_mcp_exposes_tools_without_secrets(vault):
+    ctx = vault.get_context("ghctx")
+    ctx.env["PRIVATE_VALUE"] = "literal_context_secret_12345"
+    vault.put_context(ctx)
     server = build(vault)
     names = {t.name for t in asyncio.run(server.list_tools())}
     assert {
@@ -166,6 +169,10 @@ def test_mcp_exposes_tools_without_secrets(vault):
         text = json.dumps(_payload(asyncio.run(server.call_tool(tool, {}))))
         assert GH_TOKEN not in text
         assert AWS_SECRET not in text
+        assert "literal_context_secret_12345" not in text
+
+    info = _payload(asyncio.run(server.call_tool("baton_info", {})))
+    assert info["custom_providers"] is True
 
 
 def test_mcp_lease_then_run_roundtrip(vault):

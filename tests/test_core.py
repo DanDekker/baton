@@ -215,9 +215,20 @@ def test_catalog_rejects_missing_fields():
         build_credential("x", "aws", {"access_key_id": "a"})
 
 
-def test_catalog_rejects_unknown_provider():
-    with pytest.raises(PresetError, match="unknown provider"):
-        build_credential("x", "nope", {"token": "a"})
+def test_catalog_custom_provider_defaults_to_bearer():
+    cred = build_credential("x", "other-service", {"token": "a"})
+    assert cred.provider == "other-service"
+    assert cred.auth == {"scheme": "bearer", "field": "token"}
+
+
+def test_catalog_custom_basic_auth_uses_username_and_password():
+    cred = build_credential(
+        "x", "other-service", {"username": "user", "password": "pass"},
+        auth={"scheme": "basic"},
+    )
+    assert cred.secret == {"username": "user", "password": "pass"}
+    with pytest.raises(PresetError, match="password"):
+        build_credential("x", "other-service", {"username": "user"}, auth={"scheme": "basic"})
 
 
 def test_docker_preset_builds_auth_blob(tmp_path):

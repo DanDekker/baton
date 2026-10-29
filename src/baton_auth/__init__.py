@@ -1,5 +1,7 @@
 """baton: pass auth context between agents as leases, never as secrets."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .crypto import CryptoError, zeroize
 from .models import (
     BatonError,
@@ -13,7 +15,10 @@ from .models import (
     VaultLocked,
 )
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("baton-auth")
+except PackageNotFoundError:  # running from an unpackaged source tree
+    __version__ = "0+local"
 
 __all__ = [
     "BatonError",

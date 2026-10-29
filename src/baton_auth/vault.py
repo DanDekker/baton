@@ -490,7 +490,7 @@ class Vault:
                     "name": r["name"],
                     "description": spec.get("description", ""),
                     "credentials": spec.get("credentials", []),
-                    "env": spec.get("env", {}),
+                    "env_names": sorted(spec.get("env", {})),
                 }
             )
         return out

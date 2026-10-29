@@ -40,6 +40,9 @@ jobs:
           uv pip install --python .package-venv/bin/python dist/*.whl
           .package-venv/bin/python -m baton_auth --version
           .package-venv/bin/baton-auth --version
+          .package-venv/bin/python -c 'import baton_auth, importlib.metadata; assert baton_auth.__version__ == importlib.metadata.version("baton-auth")'
+          .package-venv/bin/baton setup --state-dir "$RUNNER_TEMP/baton-smoke" > .package-venv/mcp-config.json
+          .package-venv/bin/python -c 'import json; from pathlib import Path; assert json.loads(Path(".package-venv/mcp-config.json").read_text())["mcpServers"]["baton"]["args"] == ["-m", "baton_auth.mcp_server"]'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

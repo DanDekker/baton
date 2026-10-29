@@ -11,14 +11,17 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, broker, catalog, runner
+from . import __version__, broker, catalog, integration, runner
 from .materialize import plan
-from .models import BatonError, Context, Credential
+from .models import BatonError, Context, Credential, UnknownContext
 from .redact import Redactor
 from .vault import Vault
 
@@ -72,6 +75,31 @@ def _parse_env_pairs(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
+def _parse_auth(value: str | None, field: str | None) -> dict[str, str] | None:
+    if value is None and field is None:
+        return None
+    scheme, _, detail = (value or "bearer").partition(":")
+    if scheme not in {"bearer", "header", "query", "basic", "none"}:
+        raise BatonError(f"unknown auth scheme {scheme!r}")
+    if scheme in {"header", "query"}:
+        if not detail or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", detail):
+            raise BatonError(
+                f"--auth {scheme} needs a valid name, for example {scheme}:x-api-key"
+            )
+    elif detail:
+        raise BatonError(f"--auth {scheme} does not take a name")
+    if field and scheme in {"basic", "none"}:
+        raise BatonError(f"--auth-field cannot be used with {scheme} auth")
+    auth = {"scheme": scheme}
+    if scheme == "header":
+        auth["header"] = detail
+    if scheme == "query":
+        auth["param"] = detail
+    if field:
+        auth["field"] = field
+    return auth
+
+
 # ----------------------------------------------------------------- commands
 def cmd_status(v: Vault, _args: argparse.Namespace) -> int:
     for key, value in v.stats().items():
@@ -112,9 +140,21 @@ def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
         notes=args.notes or "",
         env_map=_parse_env_pairs(args.env),
         refresh=refresh_config if refresh_config else None,
+        auth=_parse_auth(args.auth, args.auth_field),
     )
     v.put_credential(cred)
     _out(f"stored {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
+    if cred.provider not in catalog.PRESETS:
+        _out(f"custom provider {cred.provider}: {cred.auth['scheme']} HTTP auth")
+    if args.context:
+        try:
+            ctx = v.get_context(args.context)
+        except UnknownContext:
+            ctx = Context(name=args.context)
+        if cred.name not in ctx.credentials:
+            ctx.credentials.append(cred.name)
+            v.put_context(ctx)
+        _out(f"context {ctx.name}: {', '.join(ctx.credentials)}")
     return 0
 
 
@@ -303,6 +343,44 @@ def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
     _out(f"baton {__version__}")
     for p in catalog.PRESETS.values():
         _out(f"  {p.provider:8} {', '.join(p.fields)}  -- {p.hint}")
+    _out("  other provider names use bearer token auth by default")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    if args.client in {"codex", "claude-code"}:
+        if args.output or args.root:
+            raise BatonError("--output and --root apply only to JSON client configs")
+        command = integration.client_command(args.client, args.state_dir)
+        try:
+            subprocess.run(command, check=True)
+        except FileNotFoundError as exc:
+            raise BatonError(
+                f"{args.client} CLI not found; use `baton setup` for portable MCP config"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise BatonError(f"{args.client} could not add baton (exit {exc.returncode})") from exc
+    else:
+        if args.client != "generic" and args.root:
+            raise BatonError("--root is only for generic JSON config")
+        root = args.root or ("servers" if args.client == "vscode" else "mcpServers")
+        config = integration.mcp_config(args.state_dir, root)
+        target = args.output
+        if target is None and args.client == "cursor":
+            target = str(Path.home() / ".cursor" / "mcp.json")
+        if target is None and args.client == "vscode":
+            target = str(Path.cwd() / ".vscode" / "mcp.json")
+        if target:
+            path = integration.write_mcp_config(target, config)
+            _out(f"added baton to {path}")
+        else:
+            _out(json.dumps(config, indent=2))
+    if "BATON_MASTER_KEY" in os.environ or "BATON_PASSPHRASE" in os.environ:
+        print(
+            "baton: your MCP client also needs the vault key environment; "
+            "no secret was written to config",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -315,9 +393,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Use stored credentials in agent tasks without handing over the secrets.",
         epilog=(
             "First steps:\n"
-            "  baton cred add gh-work --provider github --field token\n"
-            "  baton ctx add work --cred gh-work\n"
+            "  baton cred add gh-work --provider github --field token --context work\n"
             "  baton run work -- gh api /user\n"
+            "  baton setup  # connect an MCP client\n"
             "Guide: https://github.com/DanDekker/baton/blob/master/docs/guide.md"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -327,6 +405,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", parents=[common], help="show vault status")
     sub.add_parser("info", parents=[common], help="show supported credential types")
+
+    setup = sub.add_parser(
+        "setup", parents=[common], help="create MCP config for an agent client"
+    )
+    setup.add_argument(
+        "--client", choices=["generic", "codex", "claude-code", "cursor", "vscode"],
+        default="generic", help="install for a known client or print portable JSON",
+    )
+    setup.add_argument(
+        "--root", choices=["mcpServers", "servers"], help="JSON key used by your client"
+    )
+    setup.add_argument("--output", help="merge baton into a client JSON config file")
 
     cred = sub.add_parser("cred", parents=[common], help="store and refresh credentials")
     cred_sub = cred.add_subparsers(dest="cred_cmd", required=True)
@@ -341,6 +431,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--field", action="append", help="bare NAME prompts privately; NAME=VALUE is visible in shell history")
     a.add_argument("--field-file", action="append", help="NAME=PATH for file/blob fields")
     a.add_argument("--env", action="append", help="NAME={field} extra env mapping")
+    a.add_argument("--context", help="create or update this context with the credential")
+    a.add_argument("--auth", help="HTTP auth: bearer, header:NAME, query:NAME, basic, or none")
+    a.add_argument("--auth-field", help="secret field for bearer, header, or query auth (default: token)")
     a.add_argument("--expires-days", type=float)
     a.add_argument("--notes")
     a.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
@@ -462,8 +555,10 @@ _HANDLERS = {
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     sub = getattr(args, f"{args.cmd}_cmd", None)
-    handler = _HANDLERS[(args.cmd, sub)]
     try:
+        if args.cmd == "setup":
+            return cmd_setup(args)
+        handler = _HANDLERS[(args.cmd, sub)]
         with Vault(state_dir=args.state_dir) as v:
             return handler(v, args)
     except BatonError as exc:

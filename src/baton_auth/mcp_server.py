@@ -17,7 +17,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import __version__, broker, runner
+from . import __version__, broker, catalog, runner
 from .models import BatonError
 from .vault import Vault
 
@@ -54,6 +54,10 @@ Pass the lease token to another agent to hand over that auth context; pass the
 credential itself and you have leaked it. Leases expire, carry a use budget, and
 are revocable with baton_revoke(). Every use is recorded in a hash-chained audit
 log (baton_audit).
+
+If there are no contexts, ask the human to add a credential in their terminal
+with `baton cred add NAME --provider SERVICE --field token --context CONTEXT`.
+Never ask them to paste a secret into chat. Custom service names work too.
 """
 
 
@@ -68,7 +72,11 @@ def build(vault: Vault) -> MCPServer:
     @server.tool(description="Vault metadata: cipher, key mode, counts. No secrets.")
     @_surfaces_errors
     def baton_info() -> dict[str, Any]:
-        return vault.stats()
+        return {
+            **vault.stats(),
+            "provider_presets": sorted(catalog.PRESETS),
+            "custom_providers": True,
+        }
 
     @server.tool(description="List auth contexts (named bundles of credentials).")
     @_surfaces_errors

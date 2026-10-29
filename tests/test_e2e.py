@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from baton_auth.catalog import build_credential
+from baton_auth.integration import mcp_config
 from baton_auth.models import Context
 from baton_auth.runner import run
 from baton_auth.vault import Vault
@@ -53,13 +54,13 @@ def test_child_receives_the_credential(vault):
 def _server_env(tmp_path: Path) -> dict[str, str]:
     env = dict(os.environ)
     env["BATON_MASTER_KEY"] = base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("=")
-    env["BATON_STATE_DIR"] = str(tmp_path / "mcp-state")
     env["PYTHONPATH"] = str(ROOT / "src")
     return env
 
 
 def test_mcp_stdio_handshake_and_tool_list(tmp_path):
     env = _server_env(tmp_path)
+    entry = mcp_config(str(tmp_path / "mcp-state"))["mcpServers"]["baton"]
     # Provision the vault the server will open.
     v = Vault(master_key=b"k" * 32, state_dir=tmp_path / "mcp-state")
     v.put_credential(build_credential("gh", "github", {"token": TOKEN}))
@@ -88,13 +89,13 @@ def test_mcp_stdio_handshake_and_tool_list(tmp_path):
     ]
     stdin = "\n".join(json.dumps(r) for r in requests) + "\n"
     proc = subprocess.run(
-        [sys.executable, "-m", "baton_auth.mcp_server"],
+        [entry["command"], *entry["args"]],
         input=stdin,
         capture_output=True,
         text=True,
         timeout=60,
         cwd=ROOT,
-        env=env,
+        env={**env, **entry["env"]},
     )
     assert proc.returncode == 0, proc.stderr
 

@@ -21,25 +21,17 @@ Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install the package 
 ```bash
 uv tool install git+https://github.com/DanDekker/baton.git
 
-baton cred add gh-work --provider github --field token  # prompts privately
-baton ctx add work --cred gh-work
+baton cred add gh-work --provider github --field token --context work
 
 baton run work -- gh api /user
 baton http work https://api.github.com/user
 baton lease new work --ttl 600 --uses 20
+baton setup  # prints MCP config for an agent client
 ```
 
-Commands run with a temporary `HOME` containing that context's CLI settings. For agents, the MCP server offers the same `run` and `http` actions through tools that return metadata and redacted results.
+The bare `--field token` prompts privately. Commands run with a temporary `HOME` containing that context's CLI settings.
 
-```json
-{
-  "mcpServers": {
-    "baton": {
-      "command": "/absolute/path/to/baton-mcp"
-    }
-  }
-}
-```
+`baton setup --client codex`, `claude-code`, `cursor`, or `vscode` connects a local agent directly. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
 
 ## Cryptography at a glance
 

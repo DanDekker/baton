@@ -18,7 +18,7 @@ from .models import BatonError, Credential
 
 
 class PresetError(BatonError):
-    """Unknown provider or missing required fields."""
+    """Invalid provider or missing required fields."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,12 +202,13 @@ PRESETS: dict[str, Preset] = {
 
 
 def preset(provider: str) -> Preset:
-    try:
-        return PRESETS[provider]
-    except KeyError:
-        raise PresetError(
-            f"unknown provider {provider!r} (have: {', '.join(sorted(PRESETS))})"
-        ) from None
+    if not provider.strip():
+        raise PresetError("provider name cannot be empty")
+    return PRESETS.get(provider) or Preset(
+        provider=provider,
+        auth={"scheme": "bearer", "field": "token"},
+        hint="Custom provider; bearer token by default",
+    )
 
 
 def build_credential(
@@ -219,17 +220,34 @@ def build_credential(
     notes: str = "",
     env_map: dict[str, str] | None = None,
     refresh: dict[str, Any] | None = None,
+    auth: dict[str, Any] | None = None,
 ) -> Credential:
     """Validate field coverage and assemble a Credential from a preset."""
     p = preset(provider)
     if provider == "ssh" and "key_name" not in values:
         values = {**values, "key_name": "id_baton"}
-    missing = [f for f in p.fields if not values.get(f)]
+    auth_spec = dict(auth) if auth is not None else dict(p.auth)
+    if provider in PRESETS and provider != "generic":
+        required = list(p.fields)
+    elif auth_spec.get("scheme") == "basic":
+        required = ["username", "password"]
+    elif auth_spec.get("scheme") == "none":
+        required = []
+    else:
+        required = [str(auth_spec.get("field", "token"))]
+    if auth is not None:
+        if auth_spec.get("scheme") == "basic":
+            required.extend(("username", "password"))
+        elif auth_spec.get("scheme") in {"bearer", "header", "query"}:
+            required.append(str(auth_spec.get("field", "token")))
+    missing = [f for f in dict.fromkeys(required) if not values.get(f)]
     if missing:
         raise PresetError(f"{provider}: missing required field(s): {', '.join(missing)}")
+    if not any(values.values()):
+        raise PresetError(f"{provider}: provide at least one secret field")
     allowed = set(p.all_fields) | {"refresh_token", "client_id", "client_secret"}
     unknown = [k for k in values if k not in allowed]
-    if unknown and provider != "generic":
+    if unknown and provider in PRESETS and provider != "generic":
         raise PresetError(f"{provider}: unknown field(s): {', '.join(unknown)}")
 
     steps: list[dict[str, Any]] = [dict(s) for s in p.materialize]
@@ -242,7 +260,7 @@ def build_credential(
         provider=provider,
         secret={k: v for k, v in values.items() if v},
         materialize=steps,
-        auth=dict(p.auth),
+        auth=auth_spec,
         refresh=dict(refresh or {}),
         expires_at=expires_at,
         notes=notes,
