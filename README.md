@@ -117,17 +117,16 @@ Master seed resolution order: `BATON_MASTER_KEY` → `BATON_PASSPHRASE` (Argon2i
 keyring (Keychain / Secret Service / Credential Locker) → `0600` keyfile. The database
 alone is never enough to decrypt anything.
 
-## Security properties
+## Security properties & Hardening
 
-- No MCP tool returns a credential value. Enforced by construction, not convention.
-- Child processes never inherit the caller's credential-shaped env vars (`*TOKEN*`,
-  `*KEY*`, `*SECRET*`, `*PASSWORD*`, …) unless a context explicitly passes them through.
-- Sandbox homes are `0700`, unique per run, and deleted on exit, failure, and timeout.
-- All output crossing back to an agent is scrubbed: known values first, then provider
-  token shapes (`AKIA…`, `ghp_…`, `glpat-…`, `sk-…`, JWTs, private-key headers).
-- The audit log is a BLAKE3 hash chain over every column, so rewriting history is
-  detectable (`baton audit`).
-- Lease tokens are stored only as a BLAKE3 digest; the token itself is never at rest.
+- **No secrets in model context**: No MCP tool returns a credential value. Enforced by construction, not convention.
+- **In-memory zeroization**: Sensitive master keys, derived subkeys, and secret buffers are wiped using `ctypes.memset` upon vault close or teardown to prevent memory dumping.
+- **Race-free atomic lease budget**: Single-use or budgeted leases are conditionally updated in SQLite (`uses < max_uses AND revoked=0`), preventing multi-threaded concurrency race conditions and over-use.
+- **High-concurrency SQLite**: Configured with Write-Ahead Logging (`WAL`), `synchronous=NORMAL`, and busy timeouts for smooth concurrent multi-agent access without lock contention.
+- **Strict sandbox isolation**: Sandbox homes are created `0700` and cleaned up on exit. Ambient host secrets and code-injection vectors (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `PYTHONPATH`, `NODE_OPTIONS`, `BASH_ENV`) are strictly scrubbed from child process environments unless explicitly allowed via context passthrough.
+- **Single-pass regex redactor**: Known secret literals are compiled into an optimized single-pass regex union, followed by pattern-based scrubbing of modern provider tokens (`AKIA…`, `ghp_…`, `github_pat_…`, `sk-ant-api03-…`, `sk-proj-…`, `hf_…`, `sk_live_…`, JWTs, OpenSSH/EC private keys).
+- **Tamper-evident audit chain**: The audit log is an authenticated BLAKE3 hash chain over every column (`baton audit`).
+- **Secretless lease handles**: Lease tokens are stored only as a BLAKE3 digest; the token itself is never stored at rest.
 
 ## Honest limits
 
