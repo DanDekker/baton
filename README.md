@@ -31,7 +31,7 @@ baton setup  # prints MCP config for an agent client
 
 The bare `--field token` prompts privately. Commands run with a temporary `HOME` containing that context's CLI settings.
 
-`baton setup --client codex`, `claude-code`, `cursor`, or `vscode` connects a local agent directly. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
+`baton setup --client CLIENT` connects Codex, Claude Code, Cursor, VS Code, Muse Code, or Hermes Agent. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
 
 ## Cryptography at a glance
 

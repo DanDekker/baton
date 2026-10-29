@@ -348,7 +348,17 @@ def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    if args.client in {"codex", "claude-code"}:
+    if args.client in {"muse-code", "hermes-agent"}:
+        if args.root:
+            raise BatonError("--root is only for generic JSON config")
+        if args.client == "muse-code":
+            target = args.output or integration.muse_settings_path()
+            path = integration.write_muse_config(target, args.state_dir)
+        else:
+            target = args.output or integration.hermes_config_path()
+            path = integration.write_hermes_config(target, args.state_dir)
+        _out(f"added baton to {path}")
+    elif args.client in {"codex", "claude-code"}:
         if args.output or args.root:
             raise BatonError("--output and --root apply only to JSON client configs")
         command = integration.client_command(args.client, args.state_dir)
@@ -410,7 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
         "setup", parents=[common], help="create MCP config for an agent client"
     )
     setup.add_argument(
-        "--client", choices=["generic", "codex", "claude-code", "cursor", "vscode"],
+        "--client", choices=[
+            "generic", "codex", "claude-code", "cursor", "vscode",
+            "muse-code", "hermes-agent",
+        ],
         default="generic", help="install for a known client or print portable JSON",
     )
     setup.add_argument(

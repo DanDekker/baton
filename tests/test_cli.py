@@ -4,6 +4,7 @@ import os
 import sys
 
 import pytest
+from ruamel.yaml import YAML
 
 from baton_auth import broker
 from baton_auth.cli import build_parser, main
@@ -85,6 +86,66 @@ def test_setup_client_commands_use_installed_python(env, monkeypatch):
         "--transport", "stdio", "--scope", "user", "baton", "--",
         sys.executable, "-m", "baton_auth.mcp_server",
     ]
+
+
+def test_muse_code_setup_preserves_settings_and_legacy_key(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    target = tmp_path / "xdg" / "muse" / "settings.json"
+    assert main(["setup", "--client", "muse-code", "--state-dir", str(env)]) == 0
+    data = json.loads(target.read_text())
+    assert data["schema_version"] == 1
+    assert data["mcpServers"]["baton"]["type"] == "stdio"
+    assert data["mcpServers"]["baton"]["env"]["BATON_STATE_DIR"] == str(env)
+
+    target.write_text(json.dumps({
+        "schema_version": 1,
+        "model": "keep-me",
+        "mcp_servers": {
+            "other": {"transport": "stdio", "command": "other"},
+            "baton": {"env": {"EXTRA": "keep"}},
+        },
+    }))
+    assert main(["setup", "--client", "muse-code", "--state-dir", str(env)]) == 0
+    data = json.loads(target.read_text())
+    assert data["model"] == "keep-me"
+    assert "mcpServers" not in data
+    assert data["mcp_servers"]["other"]["command"] == "other"
+    assert data["mcp_servers"]["baton"]["transport"] == "stdio"
+    assert data["mcp_servers"]["baton"]["env"]["EXTRA"] == "keep"
+
+
+def test_hermes_agent_setup_preserves_yaml_and_other_servers(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    target = tmp_path / "hermes" / "config.yaml"
+    target.parent.mkdir()
+    target.write_text(
+        "# keep this comment\nmodel: existing\nmcp_servers:\n"
+        "  other:\n    command: other\n"
+        "  baton:\n    env:\n      EXTRA: keep\n"
+    )
+    assert main(["setup", "--client", "hermes-agent", "--state-dir", str(env)]) == 0
+    saved = target.read_text()
+    assert "# keep this comment" in saved
+    data = YAML().load(saved)
+    assert data["model"] == "existing"
+    assert data["mcp_servers"]["other"]["command"] == "other"
+    baton = data["mcp_servers"]["baton"]
+    assert baton["command"] == sys.executable
+    assert baton["args"] == ["-m", "baton_auth.mcp_server"]
+    assert baton["env"] == {"EXTRA": "keep", "BATON_STATE_DIR": str(env)}
+    assert os.stat(target).st_mode & 0o777 == 0o600
+
+
+def test_muse_code_refuses_ambiguous_mcp_keys(env, tmp_path, capsys):
+    target = tmp_path / "settings.json"
+    original = '{"schema_version":1,"mcpServers":{},"mcp_servers":{}}'
+    target.write_text(original)
+    assert main([
+        "setup", "--client", "muse-code", "--output", str(target),
+        "--state-dir", str(env),
+    ]) == 1
+    assert target.read_text() == original
+    assert "both Muse MCP keys" in capsys.readouterr().err
 
 
 def test_custom_provider_auth_and_context(env, capsys):

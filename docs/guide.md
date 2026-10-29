@@ -49,11 +49,15 @@ baton setup --client codex
 baton setup --client claude-code
 baton setup --client cursor
 baton setup --client vscode
+baton setup --client muse-code
+baton setup --client hermes-agent
 ```
 
 Codex and Claude Code use their own setup commands. Cursor gets a personal `~/.cursor/mcp.json`; VS Code gets `.vscode/mcp.json` in the current project. For another MCP client, run `baton setup` to print JSON, or `baton setup --output PATH` to merge into its JSON config. Add `--root servers` if that client uses a `servers` key. baton uses its installed Python environment and includes the vault path, so the client opens the same vault. Setup leaves other configured servers alone.
 
-Client formats follow the current [Codex](https://learn.chatgpt.com/docs/extend/mcp), [Claude Code](https://code.claude.com/docs/en/mcp), [Cursor](https://cursor.com/docs/mcp), and [VS Code](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) MCP guides.
+Muse Code gets `~/.config/muse/settings.json` (or `$XDG_CONFIG_HOME/muse/settings.json`); Hermes Agent gets `~/.hermes/config.yaml` (or `$HERMES_HOME/config.yaml`). Both keep their existing settings and other MCP servers. Use `--output PATH` to target another config file.
+
+Client formats follow the current [Codex](https://learn.chatgpt.com/docs/extend/mcp), [Claude Code](https://code.claude.com/docs/en/mcp), [Cursor](https://cursor.com/docs/mcp), [VS Code](https://code.visualstudio.com/docs/agents/reference/mcp-configuration), [Muse Code](https://meta-models.github.io/muse-code-sdk/next/guides/extend/mcp-servers/), and [Hermes Agent](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/mcp-config-reference.md) MCP guides.
 
 If you use `BATON_MASTER_KEY` or `BATON_PASSPHRASE`, supply it to the client through its environment; setup never writes a key into the config. Agents without MCP can call `baton run` or `baton http` through a command tool. A local MCP server must be installed on the machine where the agent runs.
 
