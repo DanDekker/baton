@@ -208,7 +208,7 @@ def request(
         context_name = target
 
     ctx = vault.get_context(context_name)
-    creds = [vault.get_credential(name) for name in ctx.credentials]
+    creds = [vault.get_credential(name, auto_refresh=True) for name in ctx.credentials]
     if not creds:
         raise BrokerError(f"context {context_name} has no credentials")
     cred = pick_credential(creds, service)

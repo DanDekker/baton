@@ -84,7 +84,7 @@ def plan(vault: Vault, context_name: str) -> Plan:
     p.env = base
 
     for cred_name in ctx.credentials:
-        cred = vault.get_credential(cred_name)
+        cred = vault.get_credential(cred_name, auto_refresh=True)
         fields = {k: v for k, v in cred.secret.items() if v}
         p.secrets.extend(v for v in fields.values() if len(v) >= 8)
         where = f"credential {cred.name}"

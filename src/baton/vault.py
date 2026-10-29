@@ -268,6 +268,7 @@ class Vault:
             "meta": cred.meta,
             "auth": cred.auth,
             "materialize": cred.materialize,
+            "refresh": cred.refresh,
         }
         envelope = crypto.seal(
             self._k_storage,
@@ -297,7 +298,17 @@ class Vault:
         )
         return cred
 
-    def get_credential(self, name: str) -> Credential:
+    def get_credential(
+        self,
+        name: str,
+        *,
+        auto_refresh: bool = False,
+        skew: float = 60.0,
+    ) -> Credential:
+        if auto_refresh:
+            cred, _ = self.refresh_credential(name, force=False, skew=skew)
+            return cred
+
         row = self.get_credential_row(name)
         if row is None:
             raise UnknownCredential(f"unknown credential {name!r} (see `baton cred list`)")
@@ -316,6 +327,7 @@ class Vault:
             secret=secret,
             materialize=pub.get("materialize", []),
             auth=pub.get("auth", {}),
+            refresh=pub.get("refresh", {}),
             scopes=pub.get("scopes", []),
             expires_at=pub.get("expires_at"),
             notes=pub.get("notes", ""),
@@ -325,6 +337,50 @@ class Vault:
             updated_at=row["updated_at"],
         )
 
+    def refresh_credential(
+        self,
+        name: str,
+        *,
+        force: bool = False,
+        skew: float = 60.0,
+    ) -> tuple[Credential, bool]:
+        """Refresh a credential if it is expired or expiring within `skew` seconds.
+
+        Returns (credential, did_refresh: bool).
+        """
+        with self._lock:
+            cred = self.get_credential(name, auto_refresh=False)
+            if not cred.refresh:
+                return cred, False
+            if not force and not cred.expired(skew=skew):
+                return cred, False
+
+            from .refresh import execute_refresh
+
+            result = execute_refresh(cred)
+            cred.secret.update(result.secret_updates)
+            if result.expires_at is not None:
+                cred.expires_at = result.expires_at
+            if result.notes is not None:
+                cred.notes = result.notes
+            if result.meta_updates:
+                cred.meta.update(result.meta_updates)
+
+            self.put_credential(cred)
+            self.audit(
+                None,
+                None,
+                "credential.refresh",
+                cred.name,
+                True,
+                {
+                    "expires_at": cred.expires_at,
+                    "provider": cred.refresh.get("provider") or cred.refresh.get("type"),
+                    "updated_fields": sorted(result.secret_updates),
+                },
+            )
+            return cred, True
+
     def list_credentials(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT name, provider, meta FROM credentials ORDER BY name"
@@ -333,6 +389,7 @@ class Vault:
         for r in rows:
             pub = json.loads(r["meta"])
             exp = pub.get("expires_at")
+            ref = pub.get("refresh") or {}
             out.append(
                 {
                     "name": r["name"],
@@ -341,6 +398,8 @@ class Vault:
                     "scopes": pub.get("scopes", []),
                     "expires_at": exp,
                     "expired": exp is not None and exp <= time.time(),
+                    "refreshable": bool(ref),
+                    "refresh_provider": ref.get("provider") or ref.get("type"),
                     "notes": pub.get("notes", ""),
                 }
             )
