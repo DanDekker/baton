@@ -22,6 +22,8 @@ Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/). Install [baton-auth 
 uv tool install baton-auth
 
 baton cred add gh-work --provider github --field token --context work
+# or import an existing local login:
+baton cred import github --context work
 
 baton run work -- gh api /user
 baton http work https://api.github.com/user
@@ -29,9 +31,9 @@ baton lease new work --ttl 600 --uses 20
 baton setup  # prints MCP config for an agent client
 ```
 
-The bare `--field token` prompts privately. Commands run with a temporary `HOME` containing that context's CLI settings.
+The bare `--field token` prompts privately (or reads from piped stdin). Commands run in your working directory with a temporary `HOME` containing only that context's CLI settings.
 
-`baton setup --client CLIENT` connects Codex, Claude Code, Cursor, VS Code, Muse Code, or Hermes Agent. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
+`baton setup --client CLIENT` connects Codex, Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Zed, Muse Code, Hermes Agent, or writes `AGENTS.md` instructions. `baton setup` prints portable MCP config for other clients. Agents with command access can use `baton run` or `baton http`.
 
 ## Cryptography at a glance
 

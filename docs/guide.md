@@ -18,6 +18,8 @@ Install with Python 3.10+ and [uv](https://docs.astral.sh/uv/), then add a GitHu
 uv tool install baton-auth
 
 baton cred add gh-work --provider github --field token --context work
+# or import your existing local gh login:
+baton cred import github --context work
 baton ctx list
 ```
 
@@ -25,7 +27,7 @@ Run a command or send an HTTP request with the `work` context:
 
 ```bash
 baton run work -- gh api /user
-baton http work https://api.github.com/user
+baton http work https://api.github.com/user -H "Accept: application/vnd.github+json"
 ```
 
 For `baton run`, put baton options before the context name and the child command after `--`. The child gets a temporary `HOME` with this context's CLI configuration. Output is checked for known secrets before it is returned.
@@ -49,8 +51,12 @@ baton setup --client codex
 baton setup --client claude-code
 baton setup --client cursor
 baton setup --client vscode
+baton setup --client claude-desktop
+baton setup --client windsurf
+baton setup --client zed
 baton setup --client muse-code
 baton setup --client hermes-agent
+baton setup --client agents-md
 ```
 
 Codex and Claude Code use their own setup commands. Cursor gets a personal `~/.cursor/mcp.json`; VS Code gets `.vscode/mcp.json` in the current project. For another MCP client, run `baton setup` to print JSON, or `baton setup --output PATH` to merge into its JSON config. Add `--root servers` if that client uses a `servers` key. baton uses its installed Python environment and includes the vault path, so the client opens the same vault. Setup leaves other configured servers alone.
@@ -72,7 +78,7 @@ These tools do not return stored credential values. The server uses MCP Python S
 
 ## Use other services
 
-Run `baton info` to see the fields expected by each preset. Built-in presets are `aws`, `gcp`, `github`, `gitlab`, `npm`, `docker`, `kube`, `ssh`, and `generic`. Any other provider name uses bearer token auth by default.
+Run `baton info` to see the fields expected by each preset. Built-in presets are `aws`, `gcp`, `github`, `gitlab`, `npm`, `docker`, `kube`, `ssh`, `openai`, `anthropic`, `huggingface`, `pypi`, `cloudflare`, `stripe`, `slack`, and `generic`. Any other provider name uses bearer token auth by default.
 
 ```bash
 baton cred add kube-prod --provider kube --field-file kubeconfig=~/.kube/config
