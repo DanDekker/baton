@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/DanDekker/baton/master/assets/baton-banner.svg" alt="baton — Pass the baton, never the secret." width="100%">
+<img src="https://raw.githubusercontent.com/DanDekker/baton/main/assets/baton-banner.svg" alt="baton — Pass the baton, never the secret." width="100%">
 
-<p><a href="#try-it">Try it</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/guide.md">User guide</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/security.md">Security</a></p>
+<p><a href="#try-it">Try it</a> · <a href="https://github.com/DanDekker/baton/blob/main/docs/guide.md">User guide</a> · <a href="https://github.com/DanDekker/baton/blob/main/docs/security.md">Security</a></p>
 
-<p><a href="https://github.com/DanDekker/baton/actions/workflows/package.yml"><img src="https://github.com/DanDekker/baton/actions/workflows/package.yml/badge.svg?branch=master" alt="Package CI"></a></p>
+<p><a href="https://github.com/DanDekker/baton/actions/workflows/package.yml"><img src="https://github.com/DanDekker/baton/actions/workflows/package.yml/badge.svg?branch=main" alt="Package CI"></a></p>
 
 </div>
 
@@ -44,8 +44,8 @@ The bare `--field token` prompts privately. Commands run with a temporary `HOME`
 
 ## Learn more
 
-- [User guide](https://github.com/DanDekker/baton/blob/master/docs/guide.md) — contexts, leases, providers, refresh, and MCP tools.
-- [Security and limits](https://github.com/DanDekker/baton/blob/master/docs/security.md) — what baton protects, how it stores secrets, and where its boundary ends.
+- [User guide](https://github.com/DanDekker/baton/blob/main/docs/guide.md) — contexts, leases, providers, refresh, and MCP tools.
+- [Security and limits](https://github.com/DanDekker/baton/blob/main/docs/security.md) — what baton protects, how it stores secrets, and where its boundary ends.
 
 The distribution is named `baton-auth` and also provides the `baton-auth` command. The Python import is `baton_auth`.
 

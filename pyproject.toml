@@ -28,7 +28,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/DanDekker/baton"
-Documentation = "https://github.com/DanDekker/baton/blob/master/docs/guide.md"
+Documentation = "https://github.com/DanDekker/baton/blob/main/docs/guide.md"
 Issues = "https://github.com/DanDekker/baton/issues"
 Source = "https://github.com/DanDekker/baton"
 
