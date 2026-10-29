@@ -500,25 +500,24 @@ class Vault:
         detail: dict[str, Any] | None = None,
     ) -> None:
         ts = time.time()
+        detail = detail or {}
         prev = self._last_hash()
-        entry = json.dumps(
-            {
-                "ts": ts,
-                "lease_id": lease_id,
-                "subject": subject,
-                "action": action,
-                "target": target,
-                "ok": bool(ok),
-                "detail": detail or {},
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        entry = self._entry(ts, lease_id, subject, action, target, ok, detail)
         h = crypto.chain(bytes.fromhex(prev), entry).hex()
         self._conn.execute(
             "INSERT INTO audit(ts,lease_id,subject,action,target,ok,detail,prev_hash,hash)"
             " VALUES(?,?,?,?,?,?,?,?,?)",
-            (ts, lease_id, subject, action, target, int(ok), entry.decode(), prev, h),
+            (
+                ts,
+                lease_id,
+                subject,
+                action,
+                target,
+                int(ok),
+                json.dumps(detail, sort_keys=True, separators=(",", ":")),
+                prev,
+                h,
+            ),
         )
         self._conn.commit()
 
@@ -541,13 +540,47 @@ class Vault:
             for r in rows
         ]
 
+    @staticmethod
+    def _entry(
+        ts: float,
+        lease_id: str | None,
+        subject: str | None,
+        action: str,
+        target: str | None,
+        ok: bool,
+        detail: dict[str, Any],
+    ) -> bytes:
+        """Canonical bytes hashed into the chain: every column, so rewriting any
+        field (not just the detail blob) invalidates it."""
+        return json.dumps(
+            {
+                "ts": ts,
+                "lease_id": lease_id,
+                "subject": subject,
+                "action": action,
+                "target": target,
+                "ok": bool(ok),
+                "detail": detail,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
     def verify_audit(self) -> tuple[bool, int]:
         """Recompute the chain. Returns (intact, first_bad_seq)."""
         prev = b"\x00" * 32
         rows = self._conn.execute("SELECT * FROM audit ORDER BY seq ASC").fetchall()
         for r in rows:
-            expect = crypto.chain(prev, r["detail"].encode()).hex()
-            if expect != r["hash"] or r["prev_hash"] != prev.hex():
+            entry = self._entry(
+                r["ts"],
+                r["lease_id"],
+                r["subject"],
+                r["action"],
+                r["target"],
+                bool(r["ok"]),
+                json.loads(r["detail"] or "{}"),
+            )
+            if crypto.chain(prev, entry).hex() != r["hash"] or r["prev_hash"] != prev.hex():
                 return False, r["seq"]
             prev = bytes.fromhex(r["hash"])
         return True, 0
