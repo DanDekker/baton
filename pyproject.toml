@@ -4,9 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "baton"
-description = "Auth-context broker and lease server for agents: pass handles, never secrets"
+description = "Local authentication broker for AI agents and MCP tools"
 version = "0.1.0"
 requires-python = ">=3.10"
+readme = "README.md"
+keywords = ["AI agents", "authentication", "MCP", "credential management", "secrets management"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "cryptography>=45",
   "blake3>=1.0",
@@ -15,6 +24,12 @@ dependencies = [
   "mcp>=2.0",
   "httpx>=0.27",
 ]
+
+[project.urls]
+Homepage = "https://github.com/DanDekker/baton"
+Documentation = "https://github.com/DanDekker/baton/blob/master/docs/guide.md"
+Issues = "https://github.com/DanDekker/baton/issues"
+Source = "https://github.com/DanDekker/baton"
 
 [project.scripts]
 baton = "baton.cli:main"

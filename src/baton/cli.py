@@ -14,6 +14,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import __version__, broker, catalog, runner
 from .materialize import plan
@@ -93,9 +94,9 @@ def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
         if getattr(args, "refresh_client_id", None):
             refresh_config["client_id"] = args.refresh_client_id
         if getattr(args, "refresh_client_secret", None):
-            refresh_config["client_secret"] = args.refresh_client_secret
+            values["client_secret"] = args.refresh_client_secret
         if getattr(args, "refresh_token", None):
-            refresh_config["refresh_token"] = args.refresh_token
+            values["refresh_token"] = args.refresh_token
         if getattr(args, "refresh_scope", None):
             refresh_config["scope"] = args.refresh_scope
         if getattr(args, "refresh_cmd", None):
@@ -224,7 +225,9 @@ def cmd_lease_revoke(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_run(v: Vault, args: argparse.Namespace) -> int:
-    argv = [a for a in args.argv if a != "--"]
+    argv = list(args.argv)
+    if argv and argv[0] == "--":
+        argv.pop(0)
     result = runner.run(
         v,
         args.target,
@@ -277,13 +280,17 @@ def cmd_mcp(v: Vault, _args: argparse.Namespace) -> int:
 
 
 def cmd_http(v: Vault, args: argparse.Namespace) -> int:
+    try:
+        json_body = json.loads(args.body) if args.body else None
+    except json.JSONDecodeError as exc:
+        raise BatonError(f"--body must be valid JSON ({exc.msg} at column {exc.colno})") from exc
     resp = broker.request(
         v,
         args.target,
         args.method,
         args.url,
         service=args.service,
-        json_body=json.loads(args.body) if args.body else None,
+        json_body=json_body,
         allow_private=args.allow_private,
         allow_loopback=not args.disallow_loopback,
     )
@@ -302,21 +309,36 @@ def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--state-dir", help="vault directory (default: ~/.local/state/baton)")
-    common.add_argument("--json", action="store_true", help="machine-readable output")
 
-    p = argparse.ArgumentParser(prog="baton", description="Auth contexts for agents.")
+    p = argparse.ArgumentParser(
+        prog="baton",
+        description="Use stored credentials in agent tasks without handing over the secrets.",
+        epilog=(
+            "First steps:\n"
+            "  baton cred add gh-work --provider github --field token\n"
+            "  baton ctx add work --cred gh-work\n"
+            "  baton run work -- gh api /user\n"
+            "Guide: https://github.com/DanDekker/baton/blob/master/docs/guide.md"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--version", action="version", version=f"baton {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("status", parents=[common], help="vault state")
-    sub.add_parser("info", parents=[common], help="supported providers")
+    sub.add_parser("status", parents=[common], help="show vault status")
+    sub.add_parser("info", parents=[common], help="show supported credential types")
 
-    cred = sub.add_parser("cred", parents=[common], help="manage credentials")
+    cred = sub.add_parser("cred", parents=[common], help="store and refresh credentials")
     cred_sub = cred.add_subparsers(dest="cred_cmd", required=True)
-    a = cred_sub.add_parser("add", parents=[common])
+    a = cred_sub.add_parser(
+        "add",
+        parents=[common],
+        description="Store a credential. A bare --field name prompts for its value privately.",
+        epilog="Example: baton cred add gh-work --provider github --field token",
+    )
     a.add_argument("name")
     a.add_argument("--provider", required=True)
-    a.add_argument("--field", action="append", help="NAME=VALUE, or bare NAME to prompt hidden")
+    a.add_argument("--field", action="append", help="bare NAME prompts privately; NAME=VALUE is visible in shell history")
     a.add_argument("--field-file", action="append", help="NAME=PATH for file/blob fields")
     a.add_argument("--env", action="append", help="NAME={field} extra env mapping")
     a.add_argument("--expires-days", type=float)
@@ -324,12 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
     a.add_argument("--refresh-token-url", help="OAuth2 token endpoint URL")
     a.add_argument("--refresh-client-id", help="OAuth2 client ID")
-    a.add_argument("--refresh-client-secret", help="OAuth2 client secret")
-    a.add_argument("--refresh-token", help="OAuth2 refresh token override")
+    a.add_argument("--refresh-client-secret", help="OAuth2 client secret (prefer --field client_secret)")
+    a.add_argument("--refresh-token", help="OAuth2 refresh token (prefer --field refresh_token)")
     a.add_argument("--refresh-scope", help="OAuth2 scope")
     a.add_argument("--refresh-cmd", help="exec refresh command string")
     a.add_argument("--refresh-ttl", type=float, help="TTL in seconds for exec refresh")
-    cred_sub.add_parser("list", parents=[common])
+    cred_list = cred_sub.add_parser("list", parents=[common])
+    cred_list.add_argument("--json", action="store_true", help="print JSON")
     crf = cred_sub.add_parser("refresh", parents=[common], help="refresh a credential")
     crf.add_argument("name")
     crf.add_argument("--force", action="store_true", help="refresh even if not expired")
@@ -337,7 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = cred_sub.add_parser("rm", parents=[common])
     r.add_argument("name")
 
-    ctx = sub.add_parser("ctx", parents=[common], help="manage contexts")
+    ctx = sub.add_parser("ctx", parents=[common], help="group credentials into contexts")
     ctx_sub = ctx.add_subparsers(dest="ctx_cmd", required=True)
     c = ctx_sub.add_parser("add", parents=[common])
     c.add_argument("name")
@@ -346,11 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--env", action="append")
     c.add_argument("--passthrough", action="append")
     c.add_argument("--inherit", action="append")
-    ctx_sub.add_parser("list", parents=[common])
+    ctx_list = ctx_sub.add_parser("list", parents=[common])
+    ctx_list.add_argument("--json", action="store_true", help="print JSON")
     cr = ctx_sub.add_parser("rm", parents=[common])
     cr.add_argument("name")
 
-    lease = sub.add_parser("lease", parents=[common], help="issue and revoke handles")
+    lease = sub.add_parser("lease", parents=[common], help="create and revoke temporary access")
     lease_sub = lease.add_subparsers(dest="lease_cmd", required=True)
     ln = lease_sub.add_parser("new", parents=[common])
     ln.add_argument("context")
@@ -358,31 +382,44 @@ def build_parser() -> argparse.ArgumentParser:
     ln.add_argument("--ttl", type=float, default=900.0)
     ln.add_argument("--uses", type=int)
     ln.add_argument("--service", action="append")
-    lease_sub.add_parser("list", parents=[common])
+    lease_list = lease_sub.add_parser("list", parents=[common])
+    lease_list.add_argument("--json", action="store_true", help="print JSON")
     lr = lease_sub.add_parser("revoke", parents=[common])
     lr.add_argument("lease_id")
 
     run_p = sub.add_parser(
         "run",
         parents=[common],
-        help="run a command with a context (options go before TARGET, then -- CMD)",
+        help="run a command with stored credentials",
+        description="Run a command with credentials from a context or lease.",
+        epilog=(
+            "Example: baton run work -- gh api /user\n"
+            "Put baton options before TARGET. Everything after -- goes to the command."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     run_p.add_argument("target", help="context name or lease token")
     run_p.add_argument("--timeout", type=float)
     run_p.add_argument("--cwd")
     run_p.add_argument("--service")
-    run_p.add_argument("argv", nargs=argparse.REMAINDER)
+    run_p.add_argument("argv", nargs=argparse.REMAINDER, help="command and its arguments")
 
-    env_p = sub.add_parser("env", parents=[common], help="show a context's environment")
+    env_p = sub.add_parser("env", parents=[common], help="show a context's environment variables")
     env_p.add_argument("target")
     env_p.add_argument("--reveal", action="store_true", help="print secret values")
 
-    http_p = sub.add_parser("http", parents=[common], help="brokered request")
-    http_p.add_argument("target")
-    http_p.add_argument("url")
+    http_p = sub.add_parser(
+        "http",
+        parents=[common],
+        help="send an HTTP request with stored credentials",
+        description="Send an HTTP request with auth attached by baton.",
+        epilog="Example: baton http work https://api.github.com/user",
+    )
+    http_p.add_argument("target", help="context name or lease token")
+    http_p.add_argument("url", help="request URL")
     http_p.add_argument("--method", default="GET")
     http_p.add_argument("--service")
-    http_p.add_argument("--body", help="JSON request body")
+    http_p.add_argument("--body", help="JSON request body, for example '{\"name\":\"demo\"}'")
     http_p.add_argument(
         "--allow-private",
         action="store_true",
@@ -394,10 +431,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="block requests to loopback/localhost",
     )
 
-    audit_p = sub.add_parser("audit", parents=[common], help="audit trail")
+    audit_p = sub.add_parser("audit", parents=[common], help="show access history")
     audit_p.add_argument("--limit", type=int, default=20)
 
-    sub.add_parser("mcp", parents=[common], help="serve MCP over stdio")
+    sub.add_parser("mcp", parents=[common], help="start the MCP server")
     return p
 
 

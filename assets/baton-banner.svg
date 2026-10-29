@@ -3,17 +3,28 @@
   <desc id="desc">Auth contexts for agents. Pass the baton, never the secret.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1427"/>
-      <stop offset="1" stop-color="#111c31"/>
+      <stop offset="0" stop-color="#111111"/>
+      <stop offset="1" stop-color="#1d1d1d"/>
     </linearGradient>
     <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(1000 78) rotate(90) scale(260 350)">
-      <stop stop-color="#e7ad5a" stop-opacity=".17"/>
-      <stop offset="1" stop-color="#e7ad5a" stop-opacity="0"/>
+      <stop stop-color="#ffffff" stop-opacity=".07"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="baton" x1="0" y1="1" x2="1" y2="0">
-      <stop stop-color="#e7a94f"/>
-      <stop offset="1" stop-color="#ffe5a6"/>
+    <linearGradient id="gold-body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#744414"/>
+      <stop offset=".18" stop-color="#c88b31"/>
+      <stop offset=".42" stop-color="#fff1ba"/>
+      <stop offset=".61" stop-color="#e5ad50"/>
+      <stop offset="1" stop-color="#8f581b"/>
     </linearGradient>
+    <radialGradient id="gold-cap">
+      <stop stop-color="#fff6d1"/>
+      <stop offset=".65" stop-color="#dfaa4e"/>
+      <stop offset="1" stop-color="#8f5518"/>
+    </radialGradient>
+    <filter id="baton-shadow" x="-70%" y="-30%" width="240%" height="170%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
     <clipPath id="frame">
       <rect width="1200" height="300" rx="22"/>
     </clipPath>
@@ -22,20 +33,24 @@
   <g clip-path="url(#frame)">
     <rect width="1200" height="300" fill="url(#background)"/>
     <rect width="1200" height="300" fill="url(#glow)"/>
-    <path d="M785 0v300M865 0v300M945 0v300M1025 0v300M1105 0v300" stroke="#8da7cc" stroke-opacity=".08"/>
-    <path d="M740 72h398M740 150h398M740 228h398" stroke="#8da7cc" stroke-opacity=".08"/>
+    <path d="M785 0v300M865 0v300M945 0v300M1025 0v300M1105 0v300" stroke="#ffffff" stroke-opacity=".06"/>
+    <path d="M740 72h398M740 150h398M740 228h398" stroke="#ffffff" stroke-opacity=".06"/>
 
-    <rect x="67" y="76" width="144" height="144" rx="34" fill="#182640" stroke="#354967" stroke-width="2"/>
-    <path d="M104 183l72-72" stroke="#3c5475" stroke-width="33" stroke-linecap="round"/>
-    <path d="M104 183l72-72" stroke="url(#baton)" stroke-width="18" stroke-linecap="round"/>
-    <circle cx="104" cy="183" r="8" fill="#ffe8b6"/>
-    <circle cx="176" cy="111" r="8" fill="#fff1d0"/>
+    <rect x="67" y="76" width="144" height="144" rx="34" fill="#252525" stroke="#484848" stroke-width="2"/>
+    <g transform="translate(139 148) rotate(45)">
+      <rect x="-16" y="-59" width="37" height="119" rx="16" fill="#000000" opacity=".5" filter="url(#baton-shadow)"/>
+      <rect x="-15" y="-58" width="30" height="116" rx="14" fill="url(#gold-body)" stroke="#6c3f11" stroke-width="1.5"/>
+      <path d="M-7 -43v86" stroke="#fff6d6" stroke-opacity=".65" stroke-width="2" stroke-linecap="round"/>
+      <path d="M9 -44v88" stroke="#5d340d" stroke-opacity=".35" stroke-width="3" stroke-linecap="round"/>
+      <ellipse cx="0" cy="-55" rx="14" ry="6" fill="url(#gold-cap)"/>
+      <ellipse cx="0" cy="55" rx="14" ry="6" fill="url(#gold-cap)"/>
+    </g>
 
-    <text x="252" y="94" fill="#f1bf75" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700" letter-spacing="3.5">AUTH CONTEXTS FOR AGENTS</text>
-    <text x="246" y="184" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="82" font-weight="750" letter-spacing="-3">baton</text>
-    <text x="251" y="229" fill="#c9d6e6" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Pass the baton, never the secret.</text>
+    <text x="252" y="94" fill="#b9b9b9" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700" letter-spacing="3.5">AUTH CONTEXTS FOR AGENTS</text>
+    <text x="246" y="184" fill="#f6f6f6" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="82" font-weight="750" letter-spacing="-3">baton</text>
+    <text x="251" y="229" fill="#c8c8c8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Pass the baton, never the secret.</text>
 
-    <path d="M849 121l47-47m-47 126l125-126m-47 126l125-126m-47 126l125-126" stroke="#e8b569" stroke-opacity=".13" stroke-width="16" stroke-linecap="round"/>
-    <path d="M0 298h1200" stroke="#f1bd6f" stroke-opacity=".45" stroke-width="4"/>
+    <path d="M849 121l47-47m-47 126l125-126m-47 126l125-126m-47 126l125-126" stroke="#ffffff" stroke-opacity=".07" stroke-width="16" stroke-linecap="round"/>
+    <path d="M0 298h1200" stroke="#ffffff" stroke-opacity=".14" stroke-width="4"/>
   </g>
 </svg>
