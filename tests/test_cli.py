@@ -272,3 +272,80 @@ def test_refresh_flags_store_secrets_in_encrypted_payload(env):
         cred = vault.get_credential("api")
         assert cred.secret["client_secret"] == client_secret
         assert cred.secret["refresh_token"] == refresh_token
+
+
+def test_cred_add_reads_piped_stdin_and_field_file_dash(env, monkeypatch):
+    from io import StringIO
+
+    class _NonTTY(StringIO):
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sys, "stdin", _NonTTY("piped_secret_token_12345\n"))
+    assert main([
+        "cred", "add", "piped", "--provider", "generic",
+        "--field", "token", "--state-dir", str(env),
+    ]) == 0
+
+    monkeypatch.setattr(sys, "stdin", _NonTTY("multiline_secret_blob\nline2\n"))
+    assert main([
+        "cred", "add", "from-dash", "--provider", "generic",
+        "--field-file", "token=-", "--state-dir", str(env),
+    ]) == 0
+
+    with Vault(state_dir=env) as vault:
+        assert vault.get_credential("piped").secret["token"] == "piped_secret_token_12345"
+        assert vault.get_credential("from-dash").secret["token"] == "multiline_secret_blob\nline2\n"
+
+
+def test_cli_json_outputs_and_http_headers(env, monkeypatch, capsys):
+    import httpx
+
+    assert main(["status", "--json", "--state-dir", str(env)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["hash"] == "blake3"
+
+    assert main(["info", "--json", "--state-dir", str(env)]) == 0
+    info = json.loads(capsys.readouterr().out)
+    assert "anthropic" in info["presets"]
+
+    assert main([
+        "cred", "add", "api", "--provider", "generic",
+        "--field", "token=secret_value_12345",
+        "--context", "work", "--state-dir", str(env),
+    ]) == 0
+    capsys.readouterr()
+
+    assert main(["env", "work", "--json", "--state-dir", str(env)]) == 0
+    env_data = json.loads(capsys.readouterr().out)
+    assert env_data["context"] == "work"
+
+    assert main(["audit", "--json", "--state-dir", str(env)]) == 0
+    audit_data = json.loads(capsys.readouterr().out)
+    assert audit_data["intact"] is True
+
+    seen_headers = {}
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            pass
+
+        def request(self, _method, _url, **kwargs):
+            seen_headers.update(kwargs.get("headers") or {})
+            return httpx.Response(200, text='{"ok":true}')
+
+    monkeypatch.setattr(broker.httpx, "Client", _Client)
+    assert main([
+        "http", "work", "http://127.0.0.1/test",
+        "-H", "X-Custom: hello",
+        "--json", "--state-dir", str(env),
+    ]) == 0
+    http_out = json.loads(capsys.readouterr().out)
+    assert http_out["status"] == 200
+    assert seen_headers["X-Custom"] == "hello"

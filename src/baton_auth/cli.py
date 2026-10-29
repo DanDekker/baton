@@ -55,13 +55,18 @@ def _parse_fields(pairs: list[str] | None, files: list[str] | None) -> dict[str,
         if "=" in item:
             name, value = item.split("=", 1)
             values[name] = value
-        else:
+        elif sys.stdin.isatty():
             values[item] = getpass.getpass(f"{item}: ")
+        else:
+            values[item] = sys.stdin.readline().rstrip("\r\n")
     for item in files or []:
         if "=" not in item:
-            raise SystemExit(f"--field-file wants NAME=PATH, got {item!r}")
+            raise BatonError(f"--field-file wants NAME=PATH, got {item!r}")
         name, path = item.split("=", 1)
-        values[name] = Path(path).expanduser().read_text()
+        if path == "-":
+            values[name] = sys.stdin.read()
+        else:
+            values[name] = Path(path).expanduser().read_text()
     return values
 
 
@@ -69,9 +74,23 @@ def _parse_env_pairs(pairs: list[str] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for item in pairs or []:
         if "=" not in item:
-            raise SystemExit(f"--env wants NAME=TEMPLATE, got {item!r}")
+            raise BatonError(f"--env wants NAME=TEMPLATE, got {item!r}")
         name, value = item.split("=", 1)
         out[name] = value
+    return out
+
+
+def _parse_headers(items: list[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        sep = ":" if ":" in item else ("=" if "=" in item else "")
+        if not sep:
+            raise BatonError(f"--header wants NAME:VALUE, got {item!r}")
+        name, value = item.split(sep, 1)
+        name = name.strip()
+        if not name:
+            raise BatonError(f"--header wants NAME:VALUE, got {item!r}")
+        out[name] = value.strip()
     return out
 
 
@@ -101,8 +120,12 @@ def _parse_auth(value: str | None, field: str | None) -> dict[str, str] | None:
 
 
 # ----------------------------------------------------------------- commands
-def cmd_status(v: Vault, _args: argparse.Namespace) -> int:
-    for key, value in v.stats().items():
+def cmd_status(v: Vault, args: argparse.Namespace) -> int:
+    stats = v.stats()
+    if getattr(args, "json", False):
+        _out(json.dumps(stats, indent=2))
+        return 0
+    for key, value in stats.items():
         _out(f"  {key:14} {value}")
     return 0
 
@@ -277,6 +300,9 @@ def cmd_run(v: Vault, args: argparse.Namespace) -> int:
         timeout=args.timeout,
         service=args.service,
     )
+    if getattr(args, "json", False):
+        _out(json.dumps(result.as_dict(), indent=2))
+        return result.exit_code if result.exit_code >= 0 else 1
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.redactions:
@@ -294,6 +320,20 @@ def cmd_env(v: Vault, args: argparse.Namespace) -> int:
         for key, value in sorted(p.env.items()):
             _out(f"export {key}={json.dumps(value)}")
         return 0
+    if getattr(args, "json", False):
+        _out(
+            json.dumps(
+                {
+                    "context": p.context.name,
+                    "variables": [
+                        {"name": k, "source": p.sources.get(k, "-"), "set": bool(v_)}
+                        for k, v_ in sorted(p.env.items())
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return 0
     _table(
         [[k, p.sources.get(k, "-"), "yes" if v_ else "-"] for k, v_ in sorted(p.env.items())],
         ["VARIABLE", "FROM", "SET"],
@@ -304,8 +344,17 @@ def cmd_env(v: Vault, args: argparse.Namespace) -> int:
 
 def cmd_audit(v: Vault, args: argparse.Namespace) -> int:
     intact, bad = v.verify_audit()
+    events = v.audit_tail(args.limit)
+    if getattr(args, "json", False):
+        _out(
+            json.dumps(
+                {"intact": intact, "first_bad_seq": bad, "events": events},
+                indent=2,
+            )
+        )
+        return 0 if intact else 2
     _out(f"chain: {'intact' if intact else f'BROKEN at seq {bad}'}")
-    for e in v.audit_tail(args.limit):
+    for e in events:
         _out(
             f"  {time.strftime('%H:%M:%S', time.localtime(e['ts']))} "
             f"{e['action']:14} {e['target'] or '-':24} {'ok' if e['ok'] else 'FAIL'}"
@@ -325,22 +374,46 @@ def cmd_http(v: Vault, args: argparse.Namespace) -> int:
         json_body = json.loads(args.body) if args.body else None
     except json.JSONDecodeError as exc:
         raise BatonError(f"--body must be valid JSON ({exc.msg} at column {exc.colno})") from exc
+    headers = _parse_headers(getattr(args, "header", None))
     resp = broker.request(
         v,
         args.target,
         args.method,
         args.url,
         service=args.service,
+        headers=headers or None,
         json_body=json_body,
         allow_private=args.allow_private,
         allow_loopback=not args.disallow_loopback,
     )
+    if getattr(args, "json", False):
+        _out(json.dumps(resp.as_dict(), indent=2))
+        return 0 if 200 <= resp.status < 300 else 1
     _out(f"{resp.status} {resp.url}")
     _out(resp.body)
     return 0 if 200 <= resp.status < 300 else 1
 
 
-def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
+def cmd_info(v: Vault, args: argparse.Namespace) -> int:
+    if getattr(args, "json", False):
+        _out(
+            json.dumps(
+                {
+                    "version": __version__,
+                    "presets": {
+                        p.provider: {
+                            "fields": list(p.fields),
+                            "optional": list(p.optional),
+                            "hosts": list(p.hosts),
+                            "hint": p.hint,
+                        }
+                        for p in catalog.PRESETS.values()
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
     _out(f"baton {__version__}")
     for p in catalog.PRESETS.values():
         _out(f"  {p.provider:12} {', '.join(p.fields)}  -- {p.hint}")
@@ -414,8 +487,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"baton {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("status", parents=[common], help="show vault status")
-    sub.add_parser("info", parents=[common], help="show supported credential types")
+    status_p = sub.add_parser("status", parents=[common], help="show vault status")
+    status_p.add_argument("--json", action="store_true", help="print JSON")
+    info_p = sub.add_parser("info", parents=[common], help="show supported credential types")
+    info_p.add_argument("--json", action="store_true", help="print JSON")
 
     setup = sub.add_parser(
         "setup", parents=[common], help="create MCP config for an agent client"
@@ -510,11 +585,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--timeout", type=float)
     run_p.add_argument("--cwd")
     run_p.add_argument("--service")
+    run_p.add_argument("--json", action="store_true", help="print JSON result")
     run_p.add_argument("argv", nargs=argparse.REMAINDER, help="command and its arguments")
 
     env_p = sub.add_parser("env", parents=[common], help="show a context's environment variables")
     env_p.add_argument("target")
     env_p.add_argument("--reveal", action="store_true", help="print secret values")
+    env_p.add_argument("--json", action="store_true", help="print JSON metadata")
 
     http_p = sub.add_parser(
         "http",
@@ -527,7 +604,9 @@ def build_parser() -> argparse.ArgumentParser:
     http_p.add_argument("url", help="request URL")
     http_p.add_argument("--method", default="GET")
     http_p.add_argument("--service")
+    http_p.add_argument("-H", "--header", action="append", help="request header NAME:VALUE (repeatable)")
     http_p.add_argument("--body", help="JSON request body, for example '{\"name\":\"demo\"}'")
+    http_p.add_argument("--json", action="store_true", help="print JSON response")
     http_p.add_argument(
         "--allow-private",
         action="store_true",
@@ -541,6 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit_p = sub.add_parser("audit", parents=[common], help="show access history")
     audit_p.add_argument("--limit", type=int, default=20)
+    audit_p.add_argument("--json", action="store_true", help="print JSON")
 
     sub.add_parser("mcp", parents=[common], help="start the MCP server")
     return p
