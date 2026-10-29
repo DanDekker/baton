@@ -227,7 +227,8 @@ def build_credential(
     missing = [f for f in p.fields if not values.get(f)]
     if missing:
         raise PresetError(f"{provider}: missing required field(s): {', '.join(missing)}")
-    unknown = [k for k in values if k not in p.all_fields]
+    allowed = set(p.all_fields) | {"refresh_token", "client_id", "client_secret"}
+    unknown = [k for k in values if k not in allowed]
     if unknown and provider != "generic":
         raise PresetError(f"{provider}: unknown field(s): {', '.join(unknown)}")
 
