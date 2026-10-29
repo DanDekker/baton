@@ -82,6 +82,8 @@ def run(
     p = plan(vault, context_name)
 
     sandbox = vault.state_dir / "run" / f"{context_name}-{uuid.uuid4().hex[:12]}"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    sandbox.chmod(0o700)
     started = time.monotonic()
     timed_out = False
     try:
@@ -90,6 +92,20 @@ def run(
             env["BATON_LEASE"] = lease_id
         if env_extra:
             env.update(env_extra)
+
+        # Scrub dangerous code-injection environment variables unless explicitly allowed
+        dangerous_vars = (
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PYTHONPATH",
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "ENV",
+        )
+        for var in dangerous_vars:
+            if var in env and var not in p.context.passthrough:
+                del env[var]
+
         argv_list = list(argv)
         try:
             proc = subprocess.run(
