@@ -422,3 +422,52 @@ def test_cred_import_from_files_and_env(env, tmp_path, monkeypatch, capsys):
         assert vault.get_credential("anthropic").secret["token"].startswith("sk-ant-api03-")
         assert vault.get_context("work").credentials == ["aws-work", "github", "anthropic"]
     capsys.readouterr()
+
+
+def test_zero_ceremony_add_run_http_and_list(env, monkeypatch, capsys):
+    from io import StringIO
+    import httpx
+
+    class _NonTTY(StringIO):
+        def isatty(self) -> bool:
+            return False
+
+    # `baton add github` infers provider=github and prompts/reads `token` automatically
+    monkeypatch.setattr(sys, "stdin", _NonTTY("ghp_" + "k" * 36 + "\n"))
+    assert main(["add", "github", "--state-dir", str(env)]) == 0
+
+    # `baton run -- ...` without naming a context uses the sole credential
+    assert main([
+        "run", "--state-dir", str(env), "--",
+        "sh", "-c", "test -n \"$GH_TOKEN\" && echo zero_ceremony_ok",
+    ]) == 0
+    assert "zero_ceremony_ok" in capsys.readouterr().out
+
+    # `baton http URL` without naming a context auto-matches by host
+    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: None)
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            pass
+
+        def request(self, _method, _url, **_kwargs):
+            return httpx.Response(200, text='{"login":"octo"}')
+
+    monkeypatch.setattr(broker.httpx, "Client", _Client)
+    assert main([
+        "http", "https://api.github.com/user", "--json", "--state-dir", str(env),
+    ]) == 0
+    resp = json.loads(capsys.readouterr().out)
+    assert resp["status"] == 200
+    assert resp["credential"] == "github"
+
+    # `baton list --json` returns credentials and contexts
+    assert main(["list", "--json", "--state-dir", str(env)]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert len(listed["credentials"]) == 1

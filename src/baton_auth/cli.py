@@ -131,15 +131,31 @@ def cmd_status(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
-    values = _parse_fields(args.field, args.field_file)
+    provider = args.provider or (
+        args.name.lower() if args.name.lower() in catalog.PRESETS else "generic"
+    )
+    auth_spec = _parse_auth(args.auth, args.auth_field)
+    field_args = args.field
+    if not field_args and not args.field_file:
+        p = catalog.preset(provider)
+        eff_auth = auth_spec if auth_spec is not None else dict(p.auth)
+        if provider in catalog.PRESETS and provider != "generic":
+            field_args = list(p.fields)
+        elif eff_auth.get("scheme") == "basic":
+            field_args = ["username", "password"]
+        elif eff_auth.get("scheme") == "none":
+            field_args = ["token"]
+        else:
+            field_args = [str(eff_auth.get("field", "token"))]
+    values = _parse_fields(field_args, args.field_file)
     refresh_config: dict[str, Any] = {}
     if (
         getattr(args, "refresh_provider", None)
         or getattr(args, "refresh_token_url", None)
         or getattr(args, "refresh_cmd", None)
     ):
-        p = args.refresh_provider or ("oauth2" if args.refresh_token_url else "exec")
-        refresh_config["provider"] = p
+        p_ref = args.refresh_provider or ("oauth2" if args.refresh_token_url else "exec")
+        refresh_config["provider"] = p_ref
         if getattr(args, "refresh_token_url", None):
             refresh_config["token_url"] = args.refresh_token_url
         if getattr(args, "refresh_client_id", None):
@@ -157,13 +173,13 @@ def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
 
     cred = catalog.build_credential(
         args.name,
-        args.provider,
+        provider,
         values,
         expires_at=time.time() + args.expires_days * 86400 if args.expires_days else None,
         notes=args.notes or "",
         env_map=_parse_env_pairs(args.env),
         refresh=refresh_config if refresh_config else None,
-        auth=_parse_auth(args.auth, args.auth_field),
+        auth=auth_spec,
         allowed_hosts=args.allow_host,
     )
     v.put_credential(cred)
@@ -219,24 +235,47 @@ def cmd_cred_rm(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_cred_import(v: Vault, args: argparse.Namespace) -> int:
-    cred = importer.import_credential(
-        args.provider,
-        name=args.name,
-        profile=args.profile,
-        from_path=args.from_path,
-        from_env=args.from_env,
-    )
-    v.put_credential(cred)
-    _out(f"imported {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
+    if not args.provider or args.provider == "all":
+        creds = importer.import_all()
+        if not creds:
+            raise BatonError("no local credentials detected to import")
+    else:
+        creds = [
+            importer.import_credential(
+                args.provider,
+                name=args.name,
+                profile=args.profile,
+                from_path=args.from_path,
+                from_env=args.from_env,
+            )
+        ]
+    for cred in creds:
+        v.put_credential(cred)
+        _out(f"imported {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
     if args.context:
         try:
             ctx = v.get_context(args.context)
         except UnknownContext:
             ctx = Context(name=args.context)
-        if cred.name not in ctx.credentials:
-            ctx.credentials.append(cred.name)
-            v.put_context(ctx)
+        for cred in creds:
+            if cred.name not in ctx.credentials:
+                ctx.credentials.append(cred.name)
+        v.put_context(ctx)
         _out(f"context {ctx.name}: {', '.join(ctx.credentials)}")
+    return 0
+
+
+def cmd_list(v: Vault, args: argparse.Namespace) -> int:
+    creds = v.list_credentials()
+    ctxs = v.list_contexts()
+    if getattr(args, "json", False):
+        _out(json.dumps({"credentials": creds, "contexts": ctxs}, indent=2))
+        return 0
+    _out("credentials:")
+    cmd_cred_list(v, argparse.Namespace(json=False))
+    if ctxs:
+        _out("\ncontexts:")
+        cmd_ctx_list(v, argparse.Namespace(json=False))
     return 0
 
 
@@ -312,11 +351,20 @@ def cmd_lease_revoke(v: Vault, args: argparse.Namespace) -> int:
 
 def cmd_run(v: Vault, args: argparse.Namespace) -> int:
     argv = list(args.argv)
+    target: str | None = args.target
     if argv and argv[0] == "--":
         argv.pop(0)
+    elif target and not target.startswith("btn_"):
+        has_ctx = v._conn.execute(
+            "SELECT 1 FROM contexts WHERE name=?", (target,)
+        ).fetchone()
+        has_cred = v.get_credential_row(target) is not None
+        if not has_ctx and not has_cred and target != "default":
+            argv = [target, *argv]
+            target = None
     result = runner.run(
         v,
-        args.target,
+        target,
         argv,
         cwd=args.cwd,
         timeout=args.timeout,
@@ -397,11 +445,19 @@ def cmd_http(v: Vault, args: argparse.Namespace) -> int:
     except json.JSONDecodeError as exc:
         raise BatonError(f"--body must be valid JSON ({exc.msg} at column {exc.colno})") from exc
     headers = _parse_headers(getattr(args, "header", None))
+    target: str | None = args.target
+    url: str | None = args.url
+    if url is None:
+        if target and target.startswith(("http://", "https://")):
+            url = target
+            target = None
+        else:
+            raise BatonError("missing URL (usage: baton http [CONTEXT] URL)")
     resp = broker.request(
         v,
-        args.target,
+        target,
         args.method,
-        args.url,
+        url,
         service=args.service,
         headers=headers or None,
         json_body=json_body,
@@ -444,6 +500,16 @@ def cmd_info(v: Vault, args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    if getattr(args, "auto", False) or args.client == "auto":
+        if args.output or args.root:
+            raise BatonError("--output and --root cannot be used with --auto")
+        paths = integration.setup_detected_clients(args.state_dir)
+        if not paths:
+            _out(json.dumps(integration.mcp_config(args.state_dir), indent=2))
+        else:
+            for path in paths:
+                _out(f"added baton to {path}")
+        return 0
     if args.client == "agents-md":
         if args.root:
             raise BatonError("--root is only for generic JSON config")
@@ -527,13 +593,18 @@ def build_parser() -> argparse.ArgumentParser:
     status_p.add_argument("--json", action="store_true", help="print JSON")
     info_p = sub.add_parser("info", parents=[common], help="show supported credential types")
     info_p.add_argument("--json", action="store_true", help="print JSON")
+    list_p = sub.add_parser("list", parents=[common], help="list stored credentials and contexts")
+    list_p.add_argument("--json", action="store_true", help="print JSON")
 
     setup = sub.add_parser(
         "setup", parents=[common], help="create MCP config for an agent client"
     )
     setup.add_argument(
+        "--auto", action="store_true", help="detect installed agent clients and configure them"
+    )
+    setup.add_argument(
         "--client", choices=[
-            "generic", "codex", "claude-code", "claude-desktop", "cursor",
+            "generic", "auto", "codex", "claude-code", "claude-desktop", "cursor",
             "vscode", "windsurf", "zed", "muse-code", "hermes-agent",
             "agents-md",
         ],
@@ -544,33 +615,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--output", help="merge baton into a client JSON config file")
 
+    def _configure_add_parser(ap: argparse.ArgumentParser) -> None:
+        ap.add_argument("name", help="credential or provider name (e.g. github, anthropic)")
+        ap.add_argument("--provider", help="provider preset (defaults to credential name)")
+        ap.add_argument("--field", action="append", help="bare NAME prompts privately; omitted prompts required fields")
+        ap.add_argument("--field-file", action="append", help="NAME=PATH (or NAME=- for stdin)")
+        ap.add_argument("--env", action="append", help="NAME={field} extra env mapping")
+        ap.add_argument("--context", help="create or update this context with the credential")
+        ap.add_argument("--auth", help="HTTP auth: bearer, header:NAME, query:NAME, basic, or none")
+        ap.add_argument("--auth-field", help="secret field for bearer, header, or query auth (default: token)")
+        ap.add_argument("--allow-host", action="append", help="restrict HTTP requests to this host or *.domain (repeatable)")
+        ap.add_argument("--expires-days", type=float)
+        ap.add_argument("--notes")
+        ap.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
+        ap.add_argument("--refresh-token-url", help="OAuth2 token endpoint URL")
+        ap.add_argument("--refresh-client-id", help="OAuth2 client ID")
+        ap.add_argument("--refresh-client-secret", help="OAuth2 client secret (prefer --field client_secret)")
+        ap.add_argument("--refresh-token", help="OAuth2 refresh token (prefer --field refresh_token)")
+        ap.add_argument("--refresh-scope", help="OAuth2 scope")
+        ap.add_argument("--refresh-cmd", help="exec refresh command string")
+        ap.add_argument("--refresh-ttl", type=float, help="TTL in seconds for exec refresh")
+
+    def _configure_import_parser(ip: argparse.ArgumentParser) -> None:
+        ip.add_argument("provider", nargs="?", help="provider name (omit to auto-import all detected logins)")
+        ip.add_argument("--name", help="credential name in vault (default: provider name)")
+        ip.add_argument("--context", help="create or update this context with the credential")
+        ip.add_argument("--profile", default="default", help="AWS profile or Docker registry")
+        ip.add_argument("--from-path", help="path to config or token file")
+        ip.add_argument("--from-env", help="environment variable holding the token")
+
+    top_add = sub.add_parser(
+        "add",
+        parents=[common],
+        help="store a credential (shortcut for `cred add`)",
+        description="Store a credential. Prompts privately for required fields when --field is omitted.",
+        epilog="Example: baton add github",
+    )
+    _configure_add_parser(top_add)
+
+    top_import = sub.add_parser(
+        "import",
+        parents=[common],
+        help="import existing local logins (shortcut for `cred import`)",
+        description="Import existing credentials from local CLI configs or environment.",
+        epilog="Example: baton import github",
+    )
+    _configure_import_parser(top_import)
+
     cred = sub.add_parser("cred", parents=[common], help="store and refresh credentials")
     cred_sub = cred.add_subparsers(dest="cred_cmd", required=True)
     a = cred_sub.add_parser(
         "add",
         parents=[common],
         description="Store a credential. A bare --field name prompts for its value privately.",
-        epilog="Example: baton cred add gh-work --provider github --field token",
+        epilog="Example: baton cred add github",
     )
-    a.add_argument("name")
-    a.add_argument("--provider", required=True)
-    a.add_argument("--field", action="append", help="bare NAME prompts privately; NAME=VALUE is visible in shell history")
-    a.add_argument("--field-file", action="append", help="NAME=PATH for file/blob fields")
-    a.add_argument("--env", action="append", help="NAME={field} extra env mapping")
-    a.add_argument("--context", help="create or update this context with the credential")
-    a.add_argument("--auth", help="HTTP auth: bearer, header:NAME, query:NAME, basic, or none")
-    a.add_argument("--auth-field", help="secret field for bearer, header, or query auth (default: token)")
-    a.add_argument("--allow-host", action="append", help="restrict HTTP requests to this host or *.domain (repeatable)")
-    a.add_argument("--expires-days", type=float)
-    a.add_argument("--notes")
-    a.add_argument("--refresh-provider", help="refresh provider (oauth2, exec, ...)")
-    a.add_argument("--refresh-token-url", help="OAuth2 token endpoint URL")
-    a.add_argument("--refresh-client-id", help="OAuth2 client ID")
-    a.add_argument("--refresh-client-secret", help="OAuth2 client secret (prefer --field client_secret)")
-    a.add_argument("--refresh-token", help="OAuth2 refresh token (prefer --field refresh_token)")
-    a.add_argument("--refresh-scope", help="OAuth2 scope")
-    a.add_argument("--refresh-cmd", help="exec refresh command string")
-    a.add_argument("--refresh-ttl", type=float, help="TTL in seconds for exec refresh")
+    _configure_add_parser(a)
     cred_list = cred_sub.add_parser("list", parents=[common])
     cred_list.add_argument("--json", action="store_true", help="print JSON")
     crf = cred_sub.add_parser("refresh", parents=[common], help="refresh a credential")
@@ -586,12 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Import an existing credential from local CLI config or environment.",
         epilog="Example: baton cred import github --context work",
     )
-    imp.add_argument("provider", help="provider name (github, aws, npm, kube, docker, ...)")
-    imp.add_argument("--name", help="credential name in vault (default: provider name)")
-    imp.add_argument("--context", help="create or update this context with the credential")
-    imp.add_argument("--profile", default="default", help="AWS profile or Docker registry")
-    imp.add_argument("--from-path", help="path to config or token file")
-    imp.add_argument("--from-env", help="environment variable holding the token")
+    _configure_import_parser(imp)
 
     ctx = sub.add_parser("ctx", parents=[common], help="group credentials into contexts")
     ctx_sub = ctx.add_subparsers(dest="ctx_cmd", required=True)
@@ -610,7 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     lease = sub.add_parser("lease", parents=[common], help="create and revoke temporary access")
     lease_sub = lease.add_subparsers(dest="lease_cmd", required=True)
     ln = lease_sub.add_parser("new", parents=[common])
-    ln.add_argument("context")
+    ln.add_argument("context", nargs="?", help="context or credential name (default: auto)")
     ln.add_argument("--subject", default="cli")
     ln.add_argument("--ttl", type=float, default=900.0)
     ln.add_argument("--uses", type=int)
@@ -624,14 +719,14 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         parents=[common],
         help="run a command with stored credentials",
-        description="Run a command with credentials from a context or lease.",
+        description="Run a command with credentials from a context, credential, or lease.",
         epilog=(
-            "Example: baton run work -- gh api /user\n"
+            "Example: baton run github -- gh api /user\n"
             "Put baton options before TARGET. Everything after -- goes to the command."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    run_p.add_argument("target", help="context name or lease token")
+    run_p.add_argument("target", nargs="?", help="context, credential, or lease token")
     run_p.add_argument("--timeout", type=float)
     run_p.add_argument("--cwd")
     run_p.add_argument("--service")
@@ -639,7 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("argv", nargs=argparse.REMAINDER, help="command and its arguments")
 
     env_p = sub.add_parser("env", parents=[common], help="show a context's environment variables")
-    env_p.add_argument("target")
+    env_p.add_argument("target", nargs="?", help="context or credential name")
     env_p.add_argument("--reveal", action="store_true", help="print secret values")
     env_p.add_argument("--json", action="store_true", help="print JSON metadata")
 
@@ -648,10 +743,10 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="send an HTTP request with stored credentials",
         description="Send an HTTP request with auth attached by baton.",
-        epilog="Example: baton http work https://api.github.com/user",
+        epilog="Example: baton http https://api.github.com/user",
     )
-    http_p.add_argument("target", help="context name or lease token")
-    http_p.add_argument("url", help="request URL")
+    http_p.add_argument("target", help="context/credential/lease, or URL when using default")
+    http_p.add_argument("url", nargs="?", help="request URL")
     http_p.add_argument("--method", default="GET")
     http_p.add_argument("--service")
     http_p.add_argument("-H", "--header", action="append", help="request header NAME:VALUE (repeatable)")
@@ -679,6 +774,9 @@ def build_parser() -> argparse.ArgumentParser:
 _HANDLERS = {
     ("status", None): cmd_status,
     ("info", None): cmd_info,
+    ("list", None): cmd_list,
+    ("add", None): cmd_cred_add,
+    ("import", None): cmd_cred_import,
     ("cred", "add"): cmd_cred_add,
     ("cred", "import"): cmd_cred_import,
     ("cred", "list"): cmd_cred_list,
