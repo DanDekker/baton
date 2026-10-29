@@ -1,0 +1,374 @@
+"""`baton` command line.
+
+Two audiences, two rules:
+  * operators (this CLI) may retrieve a value -- but only behind an explicit
+    `--reveal`, because terminal scrollback and shell history are leak surfaces;
+  * agents (MCP, see mcp_server.py) never can.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import sys
+import time
+from pathlib import Path
+
+from . import __version__, broker, catalog, runner
+from .materialize import plan
+from .models import BatonError, Context, Credential
+from .redact import Redactor
+from .vault import Vault
+
+
+def _out(text: str = "") -> None:
+    print(text)
+
+
+def _table(rows: list[list[str]], headers: list[str]) -> None:
+    if not rows:
+        _out("  (none)")
+        return
+    widths = [
+        max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(len(headers))
+    ]
+    _out("  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
+    for r in rows:
+        _out("  " + "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
+
+
+def _fmt_expiry(expires_at: float | None) -> str:
+    if expires_at is None:
+        return "-"
+    left = int(expires_at - time.time())
+    return "expired" if left <= 0 else f"{left // 60}m"
+
+
+def _parse_fields(pairs: list[str] | None, files: list[str] | None) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in pairs or []:
+        if "=" in item:
+            name, value = item.split("=", 1)
+            values[name] = value
+        else:
+            values[item] = getpass.getpass(f"{item}: ")
+    for item in files or []:
+        if "=" not in item:
+            raise SystemExit(f"--field-file wants NAME=PATH, got {item!r}")
+        name, path = item.split("=", 1)
+        values[name] = Path(path).expanduser().read_text()
+    return values
+
+
+def _parse_env_pairs(pairs: list[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise SystemExit(f"--env wants NAME=TEMPLATE, got {item!r}")
+        name, value = item.split("=", 1)
+        out[name] = value
+    return out
+
+
+# ----------------------------------------------------------------- commands
+def cmd_status(v: Vault, _args: argparse.Namespace) -> int:
+    for key, value in v.stats().items():
+        _out(f"  {key:14} {value}")
+    return 0
+
+
+def cmd_cred_add(v: Vault, args: argparse.Namespace) -> int:
+    values = _parse_fields(args.field, args.field_file)
+    cred = catalog.build_credential(
+        args.name,
+        args.provider,
+        values,
+        expires_at=time.time() + args.expires_days * 86400 if args.expires_days else None,
+        notes=args.notes or "",
+        env_map=_parse_env_pairs(args.env),
+    )
+    v.put_credential(cred)
+    _out(f"stored {cred.name} ({cred.provider}), fields: {', '.join(sorted(cred.secret))}")
+    return 0
+
+
+def cmd_cred_list(v: Vault, args: argparse.Namespace) -> int:
+    rows = v.list_credentials()
+    if args.json:
+        _out(json.dumps(rows, indent=2))
+        return 0
+    _out("  NAME  PROVIDER  FIELDS  EXPIRES")
+    _table(
+        [
+            [r["name"], r["provider"], ",".join(r["fields"]), _fmt_expiry(r["expires_at"])]
+            for r in rows
+        ],
+        ["NAME", "PROVIDER", "FIELDS", "EXPIRES"],
+    )
+    return 0
+
+
+def cmd_cred_rm(v: Vault, args: argparse.Namespace) -> int:
+    removed = v.delete_credential(args.name)
+    _out("deleted" if removed else "not found")
+    return 0 if removed else 1
+
+
+def cmd_ctx_add(v: Vault, args: argparse.Namespace) -> int:
+    ctx = Context(
+        name=args.name,
+        credentials=list(args.cred or []),
+        description=args.desc or "",
+        passthrough=list(args.passthrough or []),
+        env=_parse_env_pairs(args.env),
+        inherit_paths=list(args.inherit or []),
+    )
+    v.put_context(ctx)
+    _out(f"context {ctx.name}: {', '.join(ctx.credentials) or '(empty)'}")
+    return 0
+
+
+def cmd_ctx_list(v: Vault, args: argparse.Namespace) -> int:
+    rows = v.list_contexts()
+    if args.json:
+        _out(json.dumps(rows, indent=2))
+        return 0
+    _table(
+        [[r["name"], ",".join(r["credentials"]), r["description"]] for r in rows],
+        ["NAME", "CREDENTIALS", "DESCRIPTION"],
+    )
+    return 0
+
+
+def cmd_ctx_rm(v: Vault, args: argparse.Namespace) -> int:
+    _out("deleted" if v.delete_context(args.name) else "not found")
+    return 0
+
+
+def cmd_lease_new(v: Vault, args: argparse.Namespace) -> int:
+    lease = v.issue_lease(
+        args.context,
+        args.subject,
+        services=list(args.service or []),
+        ttl=args.ttl,
+        max_uses=args.uses,
+    )
+    _out(lease.token)
+    return 0
+
+
+def cmd_lease_list(v: Vault, args: argparse.Namespace) -> int:
+    rows = v.list_leases()
+    if args.json:
+        _out(json.dumps(rows, indent=2))
+        return 0
+    _table(
+        [
+            [
+                r["id"],
+                r["context"],
+                r["subject"],
+                _fmt_expiry(r["expires_at"]),
+                str(r["uses"]),
+                "revoked" if r["revoked"] else "live",
+            ]
+            for r in rows
+        ],
+        ["ID", "CONTEXT", "SUBJECT", "EXPIRES", "USES", "STATE"],
+    )
+    return 0
+
+
+def cmd_lease_revoke(v: Vault, args: argparse.Namespace) -> int:
+    _out("revoked" if v.revoke_lease(args.lease_id) else "not found")
+    return 0
+
+
+def cmd_run(v: Vault, args: argparse.Namespace) -> int:
+    argv = [a for a in args.argv if a != "--"]
+    result = runner.run(
+        v,
+        args.target,
+        argv,
+        cwd=args.cwd,
+        timeout=args.timeout,
+        service=args.service,
+    )
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    if result.redactions:
+        print(
+            f"baton: {result.redactions} secret occurrence(s) redacted", file=sys.stderr
+        )
+    return result.exit_code if result.exit_code >= 0 else 1
+
+
+def cmd_env(v: Vault, args: argparse.Namespace) -> int:
+    p = plan(v, args.target)
+    redactor = Redactor(p.secrets)
+    if args.reveal:
+        _out(f"# context {p.context.name} -- values revealed on explicit request")
+        for key, value in sorted(p.env.items()):
+            _out(f"export {key}={json.dumps(value)}")
+        return 0
+    _table(
+        [[k, p.sources.get(k, "-"), "yes" if v_ else "-"] for k, v_ in sorted(p.env.items())],
+        ["VARIABLE", "FROM", "SET"],
+    )
+    _out(redactor.redact("\n  (values withheld; add --reveal to print them)"))
+    return 0
+
+
+def cmd_audit(v: Vault, args: argparse.Namespace) -> int:
+    intact, bad = v.verify_audit()
+    _out(f"chain: {'intact' if intact else f'BROKEN at seq {bad}'}")
+    for e in v.audit_tail(args.limit):
+        _out(
+            f"  {time.strftime('%H:%M:%S', time.localtime(e['ts']))} "
+            f"{e['action']:14} {e['target'] or '-':24} {'ok' if e['ok'] else 'FAIL'}"
+        )
+    return 0 if intact else 2
+
+
+def cmd_mcp(v: Vault, _args: argparse.Namespace) -> int:
+    from .mcp_server import build
+
+    build(v).run("stdio")
+    return 0
+
+
+def cmd_http(v: Vault, args: argparse.Namespace) -> int:
+    resp = broker.request(
+        v,
+        args.target,
+        args.method,
+        args.url,
+        service=args.service,
+        json_body=json.loads(args.json) if args.json else None,
+    )
+    _out(f"{resp.status} {resp.url}")
+    _out(resp.body)
+    return 0 if 200 <= resp.status < 300 else 1
+
+
+def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
+    _out(f"baton {__version__}")
+    for p in catalog.PRESETS.values():
+        _out(f"  {p.provider:8} {', '.join(p.fields)}  -- {p.hint}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--state-dir", help="vault directory (default: ~/.local/state/baton)")
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p = argparse.ArgumentParser(prog="baton", description="Auth contexts for agents.")
+    p.add_argument("--version", action="version", version=f"baton {__version__}")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("status", parents=[common], help="vault state")
+    sub.add_parser("info", parents=[common], help="supported providers")
+
+    cred = sub.add_parser("cred", parents=[common], help="manage credentials")
+    cred_sub = cred.add_subparsers(dest="cred_cmd", required=True)
+    a = cred_sub.add_parser("add", parents=[common])
+    a.add_argument("name")
+    a.add_argument("--provider", required=True)
+    a.add_argument("--field", action="append", help="NAME=VALUE, or bare NAME to prompt hidden")
+    a.add_argument("--field-file", action="append", help="NAME=PATH for file/blob fields")
+    a.add_argument("--env", action="append", help="NAME={field} extra env mapping")
+    a.add_argument("--expires-days", type=float)
+    a.add_argument("--notes")
+    cred_sub.add_parser("list", parents=[common])
+    r = cred_sub.add_parser("rm", parents=[common])
+    r.add_argument("name")
+
+    ctx = sub.add_parser("ctx", parents=[common], help="manage contexts")
+    ctx_sub = ctx.add_subparsers(dest="ctx_cmd", required=True)
+    c = ctx_sub.add_parser("add", parents=[common])
+    c.add_argument("name")
+    c.add_argument("--cred", action="append")
+    c.add_argument("--desc")
+    c.add_argument("--env", action="append")
+    c.add_argument("--passthrough", action="append")
+    c.add_argument("--inherit", action="append")
+    ctx_sub.add_parser("list", parents=[common])
+    cr = ctx_sub.add_parser("rm", parents=[common])
+    cr.add_argument("name")
+
+    lease = sub.add_parser("lease", parents=[common], help="issue and revoke handles")
+    lease_sub = lease.add_subparsers(dest="lease_cmd", required=True)
+    ln = lease_sub.add_parser("new", parents=[common])
+    ln.add_argument("context")
+    ln.add_argument("--subject", default="cli")
+    ln.add_argument("--ttl", type=float, default=900.0)
+    ln.add_argument("--uses", type=int)
+    ln.add_argument("--service", action="append")
+    lease_sub.add_parser("list", parents=[common])
+    lr = lease_sub.add_parser("revoke", parents=[common])
+    lr.add_argument("lease_id")
+
+    run_p = sub.add_parser("run", parents=[common], help="run a command with a context")
+    run_p.add_argument("target", help="context name or lease token")
+    run_p.add_argument("--timeout", type=float)
+    run_p.add_argument("--cwd")
+    run_p.add_argument("--service")
+    run_p.add_argument("argv", nargs=argparse.REMAINDER)
+
+    env_p = sub.add_parser("env", parents=[common], help="show a context's environment")
+    env_p.add_argument("target")
+    env_p.add_argument("--reveal", action="store_true", help="print secret values")
+
+    http_p = sub.add_parser("http", parents=[common], help="brokered request")
+    http_p.add_argument("target")
+    http_p.add_argument("url")
+    http_p.add_argument("--method", default="GET")
+    http_p.add_argument("--service")
+    http_p.add_argument("--json")
+
+    audit_p = sub.add_parser("audit", parents=[common], help="audit trail")
+    audit_p.add_argument("--limit", type=int, default=20)
+
+    sub.add_parser("mcp", parents=[common], help="serve MCP over stdio")
+    return p
+
+
+_HANDLERS = {
+    ("status", None): cmd_status,
+    ("info", None): cmd_info,
+    ("cred", "add"): cmd_cred_add,
+    ("cred", "list"): cmd_cred_list,
+    ("cred", "rm"): cmd_cred_rm,
+    ("ctx", "add"): cmd_ctx_add,
+    ("ctx", "list"): cmd_ctx_list,
+    ("ctx", "rm"): cmd_ctx_rm,
+    ("lease", "new"): cmd_lease_new,
+    ("lease", "list"): cmd_lease_list,
+    ("lease", "revoke"): cmd_lease_revoke,
+    ("run", None): cmd_run,
+    ("env", None): cmd_env,
+    ("http", None): cmd_http,
+    ("audit", None): cmd_audit,
+    ("mcp", None): cmd_mcp,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    sub = getattr(args, f"{args.cmd}_cmd", None)
+    handler = _HANDLERS[(args.cmd, sub)]
+    try:
+        with Vault(state_dir=args.state_dir) as v:
+            return handler(v, args)
+    except BatonError as exc:
+        print(f"baton: {exc}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as exc:
+        print(f"baton: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
