@@ -1,6 +1,6 @@
 """baton: pass auth context between agents as leases, never as secrets."""
 
-from .crypto import CryptoError
+from .crypto import CryptoError, zeroize
 from .models import (
     BatonError,
     Context,
@@ -27,6 +27,7 @@ __all__ = [
     "UnknownCredential",
     "VaultLocked",
     "Vault",
+    "zeroize",
     "__version__",
 ]
 

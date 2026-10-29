@@ -214,19 +214,6 @@ class EnvelopeInfo:
 
 
 def parse_envelope(blob: bytes) -> EnvelopeInfo:
-    if len(blob) < HEADER_LEN + SALT_LEN + NONCE_LEN + 16 + COMMIT_LEN:
-        raise CryptoError("envelope truncated")
-    if blob[:3] != MAGIC[:3]:
-        raise CryptoError("not a baton envelope")
-    version = blob[3] if blob[:4] == MAGIC else blob[4]
-    if blob[:4] != MAGIC:
-        raise CryptoError(f"unsupported envelope version {version}")
-    cipher = blob[5]
-    salt = blob[HEADER_LEN : HEADER_LEN + SALT_LEN]
-    return EnvelopeInfo(version=version, cipher=cipher, salt=salt)
-
-
-def parse_envelope(blob: bytes) -> EnvelopeInfo:
     if len(blob) < HEADER_FIXED + SALT_LEN + NONCE_LEN + 16 + COMMIT_LEN:
         raise CryptoError("envelope truncated")
     if blob[:4] != MAGIC:
@@ -249,9 +236,7 @@ def open_envelope(
     body = blob[start + NONCE_LEN : -COMMIT_LEN]
     tag = blob[-COMMIT_LEN:]
     ck = commit_key or subkey(key, "commit")
-    expect = mac(
-        ck, b"commit\x00" + head + nonce + len(aad).to_bytes(4, "big") + aad + body, COMMIT_LEN
-    )
+    expect = _commit(ck, head + nonce, aad, body)
     if not secrets.compare_digest(expect, tag):
         raise CryptoError("key commitment check failed")
     aead_cls, _ = _aead(info.cipher)
@@ -259,6 +244,20 @@ def open_envelope(
         return aead_cls(key).decrypt(nonce, body, head + aad)
     except InvalidTag as exc:
         raise CryptoError("ciphertext failed authentication") from exc
+
+
+def zeroize(buf: bytearray | memoryview) -> None:
+    """Best-effort in-memory zeroization of sensitive buffers."""
+    if not isinstance(buf, (bytearray, memoryview)):
+        return
+    import ctypes
+
+    length = len(buf)
+    if length == 0:
+        return
+    c_buf = (ctypes.c_char * length).from_buffer(buf)
+    ctypes.memset(ctypes.byref(c_buf), 0, length)
+
 
 
 # --------------------------------------------------------- key-file material
