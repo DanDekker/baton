@@ -306,7 +306,7 @@ def attach_auth(
 
 def request(
     vault: Vault,
-    target: str,
+    target: str | None,
     method: str,
     url: str,
     *,
@@ -320,15 +320,16 @@ def request(
 ) -> HttpResponse:
     validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
     lease = None
-    if target.startswith("btn_"):
+    if target and target.startswith("btn_"):
         lease = vault.resolve_lease(target)
         if service is not None and not lease.allows(service):
             raise LeaseError(f"lease does not grant {service!r}")
-        context_name = lease.context
+        context_name: str | None = lease.context
     else:
         context_name = target
 
-    ctx = vault.get_context(context_name)
+    ctx = vault.resolve_context(context_name)
+    context_name = ctx.name
     if not ctx.credentials:
         raise BrokerError(f"context {context_name} has no credentials")
     if lease is not None and lease.services and "*" not in lease.services:

@@ -92,20 +92,20 @@ def build(vault: Vault) -> MCPServer:
         return {"credentials": vault.list_credentials()}
 
     @server.tool(
-        description="Issue a lease: a signed, expiring handle to a context. Pass the "
-        "returned token to other agents instead of credentials. Empty services means "
-        "all services in the context are allowed."
+        description="Issue a lease: a signed, expiring handle to a context or credential. "
+        "Pass the returned token to other agents instead of credentials. Empty services "
+        "means all services in the context are allowed."
     )
     @_surfaces_errors
     def baton_lease(
-        context: str,
+        context: str = "",
         subject: str = "agent",
         ttl_seconds: int = 900,
         services: list[str] | None = None,
         max_uses: int | None = None,
     ) -> dict[str, Any]:
         lease = vault.issue_lease(
-            context=context,
+            context=context or None,
             subject=subject,
             services=services or [],
             ttl=float(ttl_seconds),
@@ -114,13 +114,13 @@ def build(vault: Vault) -> MCPServer:
         return {"token": lease.token, **lease.public()}
 
     @server.tool(
-        description="Run a command with a context's auth materialized into a throwaway "
-        "HOME. Returns exit code and redacted stdout/stderr."
+        description="Run a command with a context or credential's auth materialized into a "
+        "throwaway HOME. Returns exit code and redacted stdout/stderr."
     )
     @_surfaces_errors
     def baton_run(
-        lease_or_context: str,
-        argv: list[str],
+        lease_or_context: str = "",
+        argv: list[str] | None = None,
         timeout_seconds: int = 300,
         service: str | None = None,
         cwd: str | None = None,
@@ -128,8 +128,8 @@ def build(vault: Vault) -> MCPServer:
     ) -> dict[str, Any]:
         result = runner.run(
             vault,
-            lease_or_context,
-            argv,
+            lease_or_context or None,
+            argv or [],
             cwd=cwd,
             stdin=stdin,
             timeout=float(timeout_seconds) if timeout_seconds else None,
@@ -152,7 +152,7 @@ def build(vault: Vault) -> MCPServer:
     ) -> dict[str, Any]:
         resp = broker.request(
             vault,
-            lease_or_context,
+            lease_or_context or None,
             method,
             url,
             service=service,

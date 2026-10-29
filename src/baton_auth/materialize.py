@@ -85,11 +85,11 @@ def _safe_subpath(root: Path, rel: str, where: str) -> Path:
 
 def plan(
     vault: Vault,
-    context_name: str,
+    context_name: str | None = None,
     *,
     allowed_services: Sequence[str] | None = None,
 ) -> Plan:
-    ctx = vault.get_context(context_name)
+    ctx = vault.resolve_context(context_name)
     p = Plan(context=ctx)
 
     base: dict[str, str] = {k: os.environ[k] for k in _BASE_ENV if k in os.environ}

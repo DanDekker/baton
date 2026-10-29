@@ -483,6 +483,52 @@ class Vault:
             updated_at=row["updated_at"],
         )
 
+    def resolve_context(self, name: str | None = None) -> Context:
+        """Resolve an explicit context, a standalone credential, or the default context."""
+        if name:
+            row = self._conn.execute("SELECT * FROM contexts WHERE name=?", (name,)).fetchone()
+            if row is not None:
+                return self.get_context(name)
+            if self.get_credential_row(name) is not None:
+                return Context(
+                    name=name,
+                    credentials=[name],
+                    description=f"credential {name}",
+                )
+            if name == "default":
+                creds = [c["name"] for c in self.list_credentials()]
+                if creds:
+                    return Context(
+                        name="default",
+                        credentials=creds,
+                        description="all stored credentials",
+                    )
+            raise UnknownContext(f"unknown context or credential {name!r} (see `baton list`)")
+
+        default_row = self._conn.execute(
+            "SELECT name FROM contexts WHERE name='default'"
+        ).fetchone()
+        if default_row is not None:
+            return self.get_context("default")
+        ctxs = self.list_contexts()
+        if len(ctxs) == 1:
+            return self.get_context(ctxs[0]["name"])
+        creds = self.list_credentials()
+        if len(creds) == 1:
+            cname = creds[0]["name"]
+            return Context(
+                name=cname,
+                credentials=[cname],
+                description=f"credential {cname}",
+            )
+        if creds and not ctxs:
+            return Context(
+                name="default",
+                credentials=[c["name"] for c in creds],
+                description="all stored credentials",
+            )
+        raise UnknownContext("specify a context or credential name (see `baton list`)")
+
     def list_contexts(self) -> list[dict[str, Any]]:
         rows = self._conn.execute("SELECT * FROM contexts ORDER BY name").fetchall()
         out = []
@@ -513,13 +559,14 @@ class Vault:
     @_atomic
     def issue_lease(
         self,
-        context: str,
-        subject: str,
+        context: str | None = None,
+        subject: str = "cli",
         services: list[str] | None = None,
         ttl: float = 900.0,
         max_uses: int | None = None,
     ) -> Lease:
-        self.get_context(context)  # raises UnknownContext
+        resolved = self.resolve_context(context)
+        context = resolved.name
         lease = Lease(
             context=context,
             subject=subject,
