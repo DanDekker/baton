@@ -244,6 +244,33 @@ def test_docker_preset_builds_auth_blob(tmp_path):
     assert base64.b64decode(cfg["auths"]["ghcr.io"]["auth"]).decode() == "u:p"
 
 
+def test_ai_and_cloud_presets_materialize_and_attach_auth(tmp_path):
+    from baton_auth import broker
+
+    v = Vault(master_key=KEY, state_dir=tmp_path / "state")
+    anth = build_credential("claude", "anthropic", {"token": "sk-ant-api03-" + "a" * 86})
+    hf = build_credential("hf", "huggingface", {"token": "hf_" + "b" * 34})
+    pypi = build_credential("pypi", "pypi", {"token": "pypi-" + "c" * 40})
+    oai = build_credential("oai", "openai", {"token": "sk-proj-" + "d" * 48, "org_id": "org-1"})
+    for c in (anth, hf, pypi, oai):
+        v.put_credential(c)
+    v.put_context(Context(name="ai", credentials=["claude", "hf", "pypi", "oai"]))
+
+    home = tmp_path / "home"
+    env = apply(plan(v, "ai"), home)
+    assert env["ANTHROPIC_API_KEY"].startswith("sk-ant-api03-")
+    assert env["OPENAI_API_KEY"].startswith("sk-proj-")
+    assert env["OPENAI_ORG_ID"] == "org-1"
+    assert env["HF_TOKEN"].startswith("hf_")
+    assert (home / ".cache/huggingface/token").read_text().startswith("hf_")
+    assert env["UV_PUBLISH_TOKEN"].startswith("pypi-")
+    assert "username = __token__" in (home / ".pypirc").read_text()
+
+    headers, _ = broker.attach_auth(anth, "POST", "https://api.anthropic.com/v1/messages", {}, b"")
+    assert headers["x-api-key"] == anth.secret["token"]
+    assert "api.anthropic.com" in anth.allowed_hosts
+
+
 # ---------------------------------------------------------------- redact
 def test_redactor_scrubs_known_and_shaped_secrets():
     r = Redactor(["super-secret-value"])

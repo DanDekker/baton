@@ -27,6 +27,7 @@ _PATTERNS: list[tuple[str, tuple[str, ...], re.Pattern[str]]] = [
     ("anthropic", ("sk-ant-",), re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
     ("google-api", ("AIza",), re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("huggingface", ("hf_",), re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
+    ("pypi", ("pypi-",), re.compile(r"\bpypi-[A-Za-z0-9_\-]{32,}\b")),
     ("stripe", ("sk_live_", "rk_live_"), re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}\b")),
     ("jwt", ("eyJ",), re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
     ("private-key", ("-----BEGIN ",), re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")),

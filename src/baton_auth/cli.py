@@ -343,7 +343,7 @@ def cmd_http(v: Vault, args: argparse.Namespace) -> int:
 def cmd_info(v: Vault, _args: argparse.Namespace) -> int:
     _out(f"baton {__version__}")
     for p in catalog.PRESETS.values():
-        _out(f"  {p.provider:8} {', '.join(p.fields)}  -- {p.hint}")
+        _out(f"  {p.provider:12} {', '.join(p.fields)}  -- {p.hint}")
     _out("  other provider names use bearer token auth by default")
     return 0
 
