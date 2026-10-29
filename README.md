@@ -4,6 +4,8 @@
 
 <p><a href="#try-it">Try it</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/guide.md">User guide</a> · <a href="https://github.com/DanDekker/baton/blob/master/docs/security.md">Security</a></p>
 
+<p><a href="https://github.com/DanDekker/baton/actions/workflows/package.yml"><img src="https://github.com/DanDekker/baton/actions/workflows/package.yml/badge.svg?branch=master" alt="Package CI"></a></p>
+
 </div>
 
 ---
@@ -38,6 +40,15 @@ Commands run with a temporary `HOME` containing that context's CLI settings. For
   }
 }
 ```
+
+## Cryptography at a glance
+
+| Name | How baton uses it |
+| --- | --- |
+| AES-256-GCM-SIV; ChaCha20-Poly1305 fallback | Encrypts credentials in the local vault. |
+| BLAKE3 | Derives separate keys, authenticates leases and vault records, and links audit entries. |
+| Argon2id | Turns a passphrase into the vault key when passphrase mode is used. |
+| HMAC-SHA-256 | Signs AWS requests using Signature Version 4. |
 
 ## Learn more
 
