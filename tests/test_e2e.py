@@ -1,10 +1,11 @@
+import asyncio
 import base64
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
 
 from baton_auth.catalog import build_credential
@@ -67,47 +68,30 @@ def test_mcp_stdio_handshake_and_tool_list(tmp_path):
     v.put_context(Context(name="work", credentials=["gh"]))
     v.close()
 
-    requests = [
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "probe", "version": "0"},
-            },
-        },
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "baton_credentials", "arguments": {}},
-        },
-    ]
-    stdin = "\n".join(json.dumps(r) for r in requests) + "\n"
-    proc = subprocess.run(
-        [entry["command"], *entry["args"]],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=ROOT,
-        env={**env, **entry["env"]},
-    )
-    assert proc.returncode == 0, proc.stderr
+    stderr_path = tmp_path / "mcp-stderr.log"
 
-    messages = []
-    for line in proc.stdout.splitlines():
-        if line.strip():
-            messages.append(json.loads(line))
+    async def exercise():
+        # Complete initialization before sending tool requests, and keep stdin
+        # open until their responses arrive. EOF can cancel unfinished work.
+        with stderr_path.open("w", encoding="utf-8") as errlog:
+            async with stdio_client(StdioServerParameters(
+                command=entry["command"], args=entry["args"], cwd=ROOT,
+                env={**env, **entry["env"]},
+            ), errlog=errlog) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
+                    initialized = await session.initialize()
+                    assert initialized.server_info.name == "baton"
+                    listed = await session.list_tools()
+                    names = {tool.name for tool in listed.tools}
+                    assert {"baton_run", "baton_lease"} <= names
+                    credentials = await session.call_tool("baton_credentials", {})
+                    assert not credentials.is_error, credentials
+                    metadata = json.loads(credentials.content[0].text)
+                    assert metadata["credentials"][0]["name"] == "gh"
+                    payload = "\n".join(result.model_dump_json() for result in (
+                        initialized, listed, credentials,
+                    ))
+                    assert TOKEN not in payload, "MCP surface must never carry a credential value"
 
-    assert messages[0]["result"]["serverInfo"]["name"] == "baton"
-    tools = {t["name"] for m in messages if "tools" in m.get("result", {}) for t in m["result"]["tools"]}
-    assert "baton_run" in tools and "baton_lease" in tools
-
-    payload = json.dumps(messages)
-    assert TOKEN not in payload, "MCP surface must never carry a credential value"
-    assert TOKEN not in proc.stderr
+    asyncio.run(asyncio.wait_for(exercise(), timeout=60))
+    assert TOKEN not in stderr_path.read_text()
