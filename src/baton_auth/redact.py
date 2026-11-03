@@ -70,8 +70,8 @@ class Redactor:
             if len(url_enc) >= MIN_LEN:
                 expanded.add(url_enc)
             expanded.add(quote_plus(s, safe=""))
-            if len(s) >= 12:
-                b64 = base64.b64encode(s.encode()).decode()
+            for encode in (base64.b64encode, base64.urlsafe_b64encode):
+                b64 = encode(s.encode()).decode()
                 expanded.add(b64)
                 expanded.add(b64.rstrip("="))
         values = sorted(expanded, key=len, reverse=True)
