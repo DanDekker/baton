@@ -1,5 +1,4 @@
 import concurrent.futures
-import os
 import sys
 
 import pytest
@@ -55,8 +54,8 @@ def test_sqlite_wal_mode_enabled(vault):
     assert row[0].lower() == "wal"
 
     row = vault._conn.execute("PRAGMA synchronous;").fetchone()
-    # NORMAL synchronous is 1
-    assert row[0] in (1, "1", "NORMAL", "normal")
+    # FULL sync makes committed credentials and lease counters durable.
+    assert row[0] in (2, "2", "FULL", "full")
 
 
 # ----------------------------------------------- race-free atomic lease uses

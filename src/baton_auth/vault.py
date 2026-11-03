@@ -21,6 +21,7 @@ import secrets
 import sqlite3
 import stat
 import threading
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -103,14 +104,16 @@ def default_state_dir() -> Path:
 
 def _hardened_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, tmp = tempfile.mkstemp(prefix=".baton-", dir=path.parent)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
     finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
@@ -173,23 +176,65 @@ class Vault:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         self._conn = _LockedConn(conn, self._lock)
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA synchronous=NORMAL;")
-        self._conn.execute("PRAGMA busy_timeout=5000;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
-        os.chmod(self.db_path, 0o600)
+        try:
+            self._conn.execute("PRAGMA busy_timeout=5000;")
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    self._conn.execute("PRAGMA journal_mode=WAL;")
+                    break
+                except sqlite3.OperationalError as exc:
+                    # Switching a new database to WAL can return BUSY without
+                    # invoking SQLite's busy handler during concurrent opens.
+                    if str(exc) != "database is locked" or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            self._conn.execute("PRAGMA synchronous=FULL;")
+            self._conn.execute("PRAGMA foreign_keys=ON;")
+            self._conn.execute("PRAGMA secure_delete=ON;")
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
+            os.chmod(self.db_path, 0o600)
+        except sqlite3.DatabaseError:
+            self._conn.close()
+            raise VaultLocked("cannot open vault database; check for damage or another writer") from None
+        except BaseException:
+            self._conn.close()
+            raise
 
         self.mode = "unknown"
-        self._master = bytearray(self._resolve_master_key(master_key, passphrase))
-        self._k_storage = bytearray(crypto.subkey(self._master, "storage"))
-        self._k_lease = bytearray(crypto.subkey(self._master, "lease"))
-        self._k_audit = bytearray(crypto.subkey(self._master, "audit"))
-        self._k_commit = bytearray(crypto.subkey(self._master, "commit"))
-        self._set_meta("schema_version", str(SCHEMA_VERSION))
+        try:
+            # Keyring and keyfile creation must share the database's process lock.
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._master = bytearray(self._resolve_master_key(master_key, passphrase))
+            self._k_storage = bytearray(crypto.subkey(self._master, "storage"))
+            self._k_lease = bytearray(crypto.subkey(self._master, "lease"))
+            self._k_audit = bytearray(crypto.subkey(self._master, "audit"))
+            self._k_commit = bytearray(crypto.subkey(self._master, "commit"))
+            self._verify_master_key()
+            self._conn.commit()
+            self._set_meta("schema_version", str(SCHEMA_VERSION))
+        except BaseException:
+            self._conn.rollback()
+            self.close()
+            raise
 
     # ------------------------------------------------------------- lifecycle
+    def _verify_master_key(self) -> None:
+        check = crypto.mac_hex(self._k_commit, b"baton/vault-key-check", 32)
+        stored = self._get_meta("key_check")
+        if stored is not None:
+            if not isinstance(stored, str) or not stored.isascii() or not secrets.compare_digest(stored, check):
+                raise VaultLocked("master key does not match this vault")
+            return
+        row = self._conn.execute("SELECT * FROM credentials LIMIT 1").fetchone()
+        if row is not None:
+            crypto.open_envelope(
+                self._k_storage, row["envelope"],
+                self._cred_aad(row["id"], row["name"]), commit_key=self._k_commit,
+            )
+        self._conn.execute("INSERT INTO meta(key,value) VALUES('key_check',?)", (check,))
+
     def __enter__(self) -> "Vault":
         return self
 
@@ -241,7 +286,10 @@ class Vault:
                 salt = base64.urlsafe_b64decode(salt_b64)
             else:
                 salt = crypto.new_salt()
-                self._set_meta("kdf_salt", base64.urlsafe_b64encode(salt).decode())
+                self._conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('kdf_salt',?)",
+                    (base64.urlsafe_b64encode(salt).decode(),),
+                )
             self.mode = "passphrase"
             return crypto.derive_key_argon2id(passphrase, salt)
 
@@ -252,10 +300,18 @@ class Vault:
             if stored:
                 self.mode = "keyring"
                 return crypto.key_from_b64(stored)
+            keyfile = self.state_dir / "master.key"
+            if keyfile.exists():
+                self.mode = "keyfile"
+                return crypto.key_from_b64(keyfile.read_text())
+            if self._get_meta("schema_version") is not None:
+                raise VaultLocked("vault key is unavailable; unlock the keyring or provide the original key")
             raw = crypto.new_master_key()
             keyring.set_password(KEYRING_SERVICE, str(self.state_dir), crypto.key_to_b64(raw))
             self.mode = "keyring"
             return raw
+        except VaultLocked:
+            raise
         except Exception:
             pass  # no usable backend -> keyfile
 
@@ -263,6 +319,8 @@ class Vault:
         if keyfile.exists():
             self.mode = "keyfile"
             return crypto.key_from_b64(keyfile.read_text())
+        if self._get_meta("schema_version") is not None:
+            raise VaultLocked("vault key is unavailable; unlock the keyring or provide the original key")
         raw = crypto.new_master_key()
         _hardened_write(keyfile, (crypto.key_to_b64(raw) + "\n").encode())
         self.mode = "keyfile"
