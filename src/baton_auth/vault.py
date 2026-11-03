@@ -42,7 +42,7 @@ from .models import (
 KEYRING_SERVICE = "baton"
 ENV_MASTER_KEY = "BATON_MASTER_KEY"
 ENV_PASSPHRASE = "BATON_PASSPHRASE"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -215,7 +215,7 @@ class Vault:
             self._k_commit = bytearray(crypto.subkey(self._master, "commit"))
             self._verify_master_key()
             self._conn.commit()
-            self._set_meta("schema_version", str(SCHEMA_VERSION))
+            self._migrate_credentials()
         except BaseException:
             self._conn.rollback()
             self.close()
@@ -329,6 +329,69 @@ class Vault:
         return raw
 
     # ----------------------------------------------------------- credentials
+    def _migrate_credentials(self) -> None:
+        """Move legacy refresh settings into the authenticated payload atomically."""
+        if self._get_meta("schema_version") == str(SCHEMA_VERSION):
+            return
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            version = int(self._get_meta("schema_version") or 0)
+            if version > SCHEMA_VERSION:
+                raise VaultLocked(
+                    "vault was written by a newer baton version; upgrade baton"
+                )
+            if version < 4:
+                rows = self._conn.execute("SELECT * FROM credentials ORDER BY id")
+                for row in rows:
+                    public = json.loads(row["meta"])
+                    payload = json.loads(
+                        crypto.open_envelope(
+                            self._k_storage, row["envelope"],
+                            self._cred_aad(row["id"], row["name"]),
+                            commit_key=self._k_commit,
+                        )
+                    )
+                    if payload.get("format") == "baton.credential.v4":
+                        secret, refresh = payload["secret"], payload["refresh"]
+                    else:
+                        secret, refresh = payload, public.get("refresh", {})
+                    envelope = self._seal_credential(row["id"], row["name"], secret, refresh)
+                    public["refresh"] = self._public_refresh(refresh)
+                    self._conn.execute(
+                        "UPDATE credentials SET envelope=?,meta=? WHERE id=?",
+                        (envelope, json.dumps(public), row["id"]),
+                    )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
+                    (str(SCHEMA_VERSION),),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        if version < 4:
+            # Retire old WAL frames when no other connection is holding them.
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+    @staticmethod
+    def _public_refresh(refresh: dict[str, Any]) -> dict[str, Any]:
+        if not refresh:
+            return {}
+        return {"provider": refresh.get("provider") or refresh.get("type") or "oauth2"}
+
+
+    def _seal_credential(
+        self, ident: str, name: str, secret: dict[str, str], refresh: dict[str, Any]
+    ) -> bytes:
+        return crypto.seal(
+            self._k_storage,
+            json.dumps({"format": "baton.credential.v4", "secret": secret, "refresh": refresh}).encode(),
+            self._cred_aad(ident, name),
+            commit_key=self._k_commit,
+        )
+
+
     @staticmethod
     def _cred_aad(ident: str, name: str) -> bytes:
         return f"cred:{ident}:{name}".encode()
@@ -360,15 +423,10 @@ class Vault:
             "meta": cred.meta,
             "auth": cred.auth,
             "materialize": cred.materialize,
-            "refresh": cred.refresh,
+            "refresh": self._public_refresh(cred.refresh),
             "allowed_hosts": cred.allowed_hosts,
         }
-        envelope = crypto.seal(
-            self._k_storage,
-            json.dumps(cred.secret).encode(),
-            self._cred_aad(cred.id, cred.name),
-            commit_key=self._k_commit,
-        )
+        envelope = self._seal_credential(cred.id, cred.name, cred.secret, cred.refresh)
         self._conn.execute(
             "INSERT INTO credentials(id,name,provider,envelope,meta,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?)"
@@ -406,7 +464,7 @@ class Vault:
         if row is None:
             raise UnknownCredential(f"unknown credential {name!r} (see `baton cred list`)")
         pub = json.loads(row["meta"])
-        secret = json.loads(
+        private = json.loads(
             crypto.open_envelope(
                 self._k_storage,
                 row["envelope"],
@@ -414,13 +472,15 @@ class Vault:
                 commit_key=self._k_commit,
             )
         )
+        if private.get("format") != "baton.credential.v4":
+            raise VaultLocked("credential format is outdated; stop older baton processes and upgrade the vault")
         return Credential(
             name=row["name"],
             provider=row["provider"],
-            secret=secret,
+            secret=private["secret"],
             materialize=pub.get("materialize", []),
             auth=pub.get("auth", {}),
-            refresh=pub.get("refresh", {}),
+            refresh=private["refresh"],
             allowed_hosts=pub.get("allowed_hosts", []),
             scopes=pub.get("scopes", []),
             expires_at=pub.get("expires_at"),
