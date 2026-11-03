@@ -11,6 +11,7 @@ import json
 import socket
 import ssl
 import threading
+import time
 from typing import Any
 
 from cryptography import x509
@@ -216,18 +217,30 @@ class RemoteClient:
         if len(body) > MAX_REQUEST:
             raise BatonError("remote request is too large")
         try:
+            deadline = time.monotonic() + 45
             with self._client.stream("POST", self.config["endpoint"] + "/v1",
-                                     content=body, headers={"Content-Type": "application/json"}) as response:
+                                     content=body, headers={"Content-Type": "application/json", "Accept-Encoding": "identity"}) as response:
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise BatonError("broker response must use identity content encoding")
                 data = bytearray()
-                for chunk in response.iter_bytes(chunk_size=16384):
-                    data.extend(chunk)
-                    if len(data) > 2_000_000:
+                for chunk in response.iter_raw():
+                    if time.monotonic() > deadline:
+                        raise BatonError("broker response deadline exceeded")
+                    if len(data) + len(chunk) > 2_000_000:
                         raise BatonError("remote response is too large")
+                    data.extend(chunk)
                 payload = json.loads(data)
+                if not isinstance(payload, dict):
+                    raise BatonError("invalid response from broker")
                 if response.status_code != 200:
-                    raise BatonError(payload.get("error", "remote request refused"))
+                    error = payload.get("error", "remote request refused")
+                    if not isinstance(error, str):
+                        raise BatonError("invalid response from broker")
+                    raise BatonError(error)
+                if not isinstance(payload.get("result"), dict):
+                    raise BatonError("invalid response from broker")
                 return payload["result"]
         except httpx.HTTPError:
             raise BatonError("cannot connect to broker; check its address, trust bundle, and agent status") from None
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, RecursionError):
             raise BatonError("invalid response from broker") from None
