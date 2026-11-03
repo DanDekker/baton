@@ -131,7 +131,7 @@ def test_oauth2_refresh_error_handling(vault, oauth_server):
     vault.put_credential(cred)
 
     _OAuthMockHandler.fail_next = True
-    with pytest.raises(RefreshError, match="bad refresh token"):
+    with pytest.raises(RefreshError, match="HTTP 400"):
         vault.refresh_credential("api_fail", force=True)
 
 
