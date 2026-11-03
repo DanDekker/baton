@@ -33,6 +33,7 @@ from .models import (
     Credential,
     Lease,
     LeaseError,
+    RefreshError,
     UnknownContext,
     UnknownCredential,
     VaultLocked,
@@ -373,13 +374,11 @@ class Vault:
             # Retire old WAL frames when no other connection is holding them.
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-
     @staticmethod
     def _public_refresh(refresh: dict[str, Any]) -> dict[str, Any]:
         if not refresh:
             return {}
         return {"provider": refresh.get("provider") or refresh.get("type") or "oauth2"}
-
 
     def _seal_credential(
         self, ident: str, name: str, secret: dict[str, str], refresh: dict[str, Any]
@@ -390,7 +389,6 @@ class Vault:
             self._cred_aad(ident, name),
             commit_key=self._k_commit,
         )
-
 
     @staticmethod
     def _cred_aad(ident: str, name: str) -> bytes:
@@ -509,31 +507,47 @@ class Vault:
             if not force and not cred.expired(skew=skew):
                 return cred, False
 
-            from .refresh import execute_refresh
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                raise RefreshError("vault is busy; retry credential refresh") from None
+            try:
+                cred = self.get_credential(name, auto_refresh=False)
+                if not cred.refresh:
+                    return cred, False
+                if not force and not cred.expired(skew=skew):
+                    return cred, False
 
-            result = execute_refresh(cred)
-            cred.secret.update(result.secret_updates)
-            if result.expires_at is not None:
+                from .refresh import execute_refresh
+
+                result = execute_refresh(cred)
+                cred.secret.update(result.secret_updates)
+                # A replacement token without a lifetime must not inherit the old
+                # token's expired deadline and trigger a refresh on every request.
                 cred.expires_at = result.expires_at
-            if result.notes is not None:
-                cred.notes = result.notes
-            if result.meta_updates:
-                cred.meta.update(result.meta_updates)
+                if result.notes is not None:
+                    cred.notes = result.notes
+                if result.meta_updates:
+                    cred.meta.update(result.meta_updates)
 
-            self.put_credential(cred)
-            self.audit(
-                None,
-                None,
-                "credential.refresh",
-                cred.name,
-                True,
-                {
-                    "expires_at": cred.expires_at,
-                    "provider": cred.refresh.get("provider") or cred.refresh.get("type"),
-                    "updated_fields": sorted(result.secret_updates),
-                },
-            )
-            return cred, True
+                self.put_credential(cred)
+                self.audit(
+                    None,
+                    None,
+                    "credential.refresh",
+                    cred.name,
+                    True,
+                    {
+                        "expires_at": cred.expires_at,
+                        "provider": cred.refresh.get("provider") or cred.refresh.get("type"),
+                        "updated_fields": sorted(result.secret_updates),
+                    },
+                )
+                return cred, True
+            finally:
+                # put_credential commits successful rotations; failures and early
+                # returns must release the lock without changing the old record.
+                self._conn.rollback()
 
     def list_credentials(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
@@ -573,7 +587,6 @@ class Vault:
     def _check_name(name: str) -> None:
         if not isinstance(name, str) or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
             raise BatonError("record name must be nonempty and contain no control characters")
-
 
     @_atomic
     def put_context(self, ctx: Context) -> Context:
@@ -799,7 +812,6 @@ class Vault:
         if not isinstance(payload, dict) or not isinstance(payload.get("i"), str) or not payload["i"]:
             raise LeaseError("malformed lease payload")
         return payload["i"]
-
 
     @_atomic
     def resolve_lease(
