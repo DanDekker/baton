@@ -111,6 +111,8 @@ baton cred refresh api --force
 
 OAuth refresh can rotate the refresh token and update the expiry from `expires_in`. Python integrations can register other handlers with `register_refresh_provider(name, handler)`.
 
+Refresh settings are encrypted with the credential. Token endpoints require HTTPS, except for loopback development servers, and ignore proxy environment variables. Responses must contain a nonempty token and a valid lifetime when supplied; failed refreshes keep the existing credential. Without a new lifetime, the replacement token has no known expiry. Command refreshes accept UTF-8 text or JSON, with a default 30-second timeout and a 1 MiB limit per output stream.
+
 ## Useful commands
 
 | Command | Purpose |
