@@ -9,6 +9,7 @@ other instead of passing secrets.
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,22 @@ class LeaseError(BatonError):
 
 class RefreshError(BatonError):
     """Credential refresh failed."""
+
+
+MAX_LEASE_USES = (1 << 63) - 1
+
+
+def validate_lease_limits(ttl: float, max_uses: int | None) -> None:
+    try:
+        valid_ttl = type(ttl) in (float, int) and math.isfinite(ttl) and ttl > 0
+    except OverflowError:
+        valid_ttl = False
+    if not valid_ttl:
+        raise LeaseError("TTL must be a positive finite number")
+    if max_uses is not None and (
+        type(max_uses) is not int or not 0 < max_uses <= MAX_LEASE_USES
+    ):
+        raise LeaseError("use budget must be a positive 64-bit integer")
 
 
 def _now() -> float:
@@ -151,8 +168,10 @@ class Lease:
     def ensure_valid(self) -> None:
         if self.revoked:
             raise LeaseError("lease revoked")
-        if _now() >= self.expires_at:
+        if not math.isfinite(self.expires_at) or _now() >= self.expires_at:
             raise LeaseError("lease expired")
+        if not 0 <= self.uses < MAX_LEASE_USES:
+            raise LeaseError("lease use counter exhausted")
         if self.max_uses is not None and self.uses >= self.max_uses:
             raise LeaseError("lease exhausted")
 

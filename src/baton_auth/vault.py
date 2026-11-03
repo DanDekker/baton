@@ -35,6 +35,7 @@ from .models import (
     UnknownContext,
     UnknownCredential,
     VaultLocked,
+    validate_lease_limits,
 )
 
 KEYRING_SERVICE = "baton"
@@ -640,6 +641,7 @@ class Vault:
         path_prefixes: list[str] | None = None,
         task: dict[str, Any] | None = None,
     ) -> Lease:
+        validate_lease_limits(ttl, max_uses)
         if recipient is not None:
             from .delegation import issue
             return issue(
@@ -712,6 +714,24 @@ class Vault:
             ) if key in spec},
         )
 
+    def _lease_token_id(self, token: str) -> str:
+        if not isinstance(token, str) or len(token) > 4096 or not token.startswith("btn_") or not token.isascii():
+            raise LeaseError("malformed lease token")
+        try:
+            body, sig = token[4:].split(".", 1)
+        except ValueError:
+            raise LeaseError("malformed lease token") from None
+        if not secrets.compare_digest(sig, self._sign(body)):
+            raise LeaseError("lease signature invalid")
+        try:
+            payload = json.loads(crypto.b64u_decode(body))
+        except (ValueError, TypeError, RecursionError):
+            raise LeaseError("malformed lease payload") from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("i"), str) or not payload["i"]:
+            raise LeaseError("malformed lease payload")
+        return payload["i"]
+
+
     @_atomic
     def resolve_lease(
         self, token: str, consume: bool = True, *, recipient: str | None = None,
@@ -720,22 +740,14 @@ class Vault:
         if recipient is not None:
             from .delegation import resolve
             return resolve(self, token, recipient, consume=consume)
-        try:
-            body, sig = token.strip().split(".", 1)
-        except ValueError:
-            raise LeaseError("malformed lease token")
-        body = body.removeprefix("btn_")
-        if not secrets.compare_digest(sig, self._sign(body)):
-            raise LeaseError("lease signature invalid")
-        try:
-            payload = json.loads(crypto.b64u_decode(body))
-        except Exception:
-            raise LeaseError("malformed lease payload")
+        lease_id = self._lease_token_id(token)
         row = self._conn.execute(
-            "SELECT * FROM leases WHERE id=?", (payload.get("i"),)
+            "SELECT * FROM leases WHERE id=?", (lease_id,)
         ).fetchone()
         if row is None:
             raise LeaseError("lease not found")
+        if not secrets.compare_digest(row["token_hash"], crypto.digest(token.encode(), 32).hex()):
+            raise LeaseError("lease token does not match stored grant")
         lease = self._lease_from_row(row)
         if lease.recipient is not None:
             raise LeaseError("recipient-bound leases require an authenticated remote identity")
@@ -743,7 +755,9 @@ class Vault:
         if consume:
             cur = self._conn.execute(
                 "UPDATE leases SET uses=uses+1 WHERE id=? AND revoked=0 "
-                "AND (max_uses IS NULL OR uses < max_uses)",
+                "AND uses < 9223372036854775807 "
+                "AND (max_uses IS NULL OR uses < max_uses) "
+                "AND expires_at > (julianday('now') - 2440587.5) * 86400.0",
                 (lease.id,),
             )
             self._conn.commit()

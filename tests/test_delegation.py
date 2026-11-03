@@ -35,7 +35,7 @@ def test_recipient_proof_and_acceptance_are_required(vault):
         delegation.accept(vault, lease.id, "bob")
     with pytest.raises(LeaseError, match="accepted"):
         delegation.resolve(vault, lease.id, "alice")
-    assert [l["id"] for l in delegation.inbox(vault, "alice")] == [lease.id]
+    assert [item["id"] for item in delegation.inbox(vault, "alice")] == [lease.id]
     assert delegation.inbox(vault, "bob") == []
     delegation.accept(vault, lease.id, "alice")
     assert delegation.resolve(vault, lease.id, "alice").uses == 1
