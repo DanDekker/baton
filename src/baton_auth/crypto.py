@@ -37,7 +37,6 @@ from dataclasses import dataclass
 
 import blake3
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 from .models import BatonError, VaultLocked

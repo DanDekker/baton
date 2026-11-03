@@ -96,15 +96,21 @@ def test_atomic_key_write_does_not_follow_predictable_temp_symlink(tmp_path):
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
-def test_missing_keyring_entry_does_not_create_a_replacement_key(tmp_path, monkeypatch, unavailable):
+def test_missing_keyring_entry_does_not_create_a_replacement_key(
+    tmp_path, monkeypatch, unavailable
+):
     monkeypatch.delenv("BATON_MASTER_KEY", raising=False)
     monkeypatch.delenv("BATON_PASSPHRASE", raising=False)
     stored = {}
     monkeypatch.setattr(keyring, "get_password", lambda *_: stored.get("key"))
-    monkeypatch.setattr(keyring, "set_password", lambda *args: stored.update(key=args[-1]))
+    monkeypatch.setattr(
+        keyring, "set_password", lambda *args: stored.update(key=args[-1])
+    )
     path = tmp_path / "state"
     with Vault(state_dir=path) as vault:
-        vault.put_credential(build_credential("api", "generic", {"token": "preserved-token"}))
+        vault.put_credential(
+            build_credential("api", "generic", {"token": "preserved-token"})
+        )
     original = stored.pop("key")
 
     def get(*_):
@@ -113,7 +119,9 @@ def test_missing_keyring_entry_does_not_create_a_replacement_key(tmp_path, monke
         return None
 
     monkeypatch.setattr(keyring, "get_password", get)
-    monkeypatch.setattr(keyring, "set_password", lambda *_: pytest.fail("must not mint a replacement"))
+    monkeypatch.setattr(
+        keyring, "set_password", lambda *_: pytest.fail("must not mint a replacement")
+    )
     with pytest.raises(VaultLocked, match="key is unavailable"):
         Vault(state_dir=path)
     assert not (path / "master.key").exists()
