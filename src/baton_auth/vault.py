@@ -28,6 +28,7 @@ from typing import Any
 
 from . import crypto
 from .models import (
+    BatonError,
     Context,
     Credential,
     Lease,
@@ -344,6 +345,7 @@ class Vault:
 
     @_atomic
     def put_credential(self, cred: Credential) -> Credential:
+        self._check_name(cred.name)
         row = self.get_credential_row(cred.name)
         if row is not None:
             cred.id = row["id"]
@@ -507,8 +509,15 @@ class Vault:
         return cur.rowcount > 0
 
     # -------------------------------------------------------------- contexts
+    @staticmethod
+    def _check_name(name: str) -> None:
+        if not isinstance(name, str) or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise BatonError("record name must be nonempty and contain no control characters")
+
+
     @_atomic
     def put_context(self, ctx: Context) -> Context:
+        self._check_name(ctx.name)
         row = self._conn.execute(
             "SELECT id, created_at FROM contexts WHERE name=?", (ctx.name,)
         ).fetchone()

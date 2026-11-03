@@ -8,12 +8,10 @@ whether the command succeeded, failed, or timed out.
 
 from __future__ import annotations
 
-import os
 import shutil
-import signal
-import subprocess
 import time
-import uuid
+import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -21,6 +19,7 @@ from typing import Sequence
 from .materialize import apply, plan
 from .models import BatonError, LeaseError
 from .redact import Redactor
+from .process import CaptureError, capture
 from .vault import Vault
 
 
@@ -90,11 +89,15 @@ def run(
     p = plan(vault, target_name, allowed_services=allowed_services)
     context_name = p.context.name
 
-    sandbox = vault.state_dir / "run" / f"{context_name}-{uuid.uuid4().hex[:12]}"
-    sandbox.mkdir(parents=True, exist_ok=True)
-    sandbox.chmod(0o700)
+    run_root = vault.state_dir / "run"
+    if run_root.is_symlink():
+        raise RunError("command directory must not be a symlink")
+    run_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    label = re.sub(r"[^A-Za-z0-9_.-]", "_", context_name)[:48]
+    sandbox = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=run_root))
     started = time.monotonic()
     timed_out = False
+    redactor = Redactor(p.secrets)
     try:
         env = apply(p, sandbox)
         if lease_id:
@@ -124,40 +127,36 @@ def run(
                 raise RunError(redactor(f"working directory not found: {cwd}"))
             run_cwd = str(resolved_cwd)
         try:
-            with subprocess.Popen(
-                argv_list,
-                cwd=run_cwd,
-                env=env,
-                stdin=subprocess.PIPE if stdin is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                errors="replace",
-                start_new_session=os.name == "posix",
-            ) as proc:
-                try:
-                    out, err = proc.communicate(stdin, timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    _kill_command(proc)
-                    out, err = proc.communicate()
-                except BaseException:
-                    _kill_command(proc)
-                    proc.wait()
-                    raise
-                code = -signal.SIGKILL if timed_out else proc.returncode
+            result = capture(
+                argv_list, cwd=run_cwd, env=env, timeout=timeout,
+                input_data=stdin.encode() if stdin is not None else None,
+                inherit_stdin=True,
+            )
+            out = result.stdout.decode("utf-8", errors="replace")
+            err = result.stderr.decode("utf-8", errors="replace")
+            timed_out, code = result.timed_out, result.returncode
+        except CaptureError as exc:
+            raise RunError(str(exc)) from None
+        except (TypeError, ValueError):
+            raise RunError("invalid command arguments or environment") from None
         except FileNotFoundError:
             raise RunError(redactor(f"command not found: {argv_list[0]}")) from None
         except OSError as exc:
             raise RunError(redactor(f"cannot run command: {exc}")) from None
+    except BatonError as exc:
+        raise RunError(redactor(str(exc))) from None
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
 
+    partial_out = partial_err = 0
+    if timed_out:
+        out, partial_out = redactor.redact_partial_tail(out)
+        err, partial_err = redactor.redact_partial_tail(err)
     clean_out, n1 = redactor.redact_counted(out)
     clean_err, n2 = redactor.redact_counted(err)
     redacted_args = [redactor.redact_counted(arg) for arg in argv_list]
     clean_argv = [arg for arg, _ in redacted_args]
-    redactions = n1 + n2 + sum(count for _, count in redacted_args)
+    redactions = n1 + n2 + partial_out + partial_err + sum(count for _, count in redacted_args)
     duration = int((time.monotonic() - started) * 1000)
 
     vault.audit(
@@ -184,26 +183,3 @@ def run(
         redactions=redactions,
         timed_out=timed_out,
     )
-
-
-def _kill_command(proc: subprocess.Popen[str]) -> None:
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-    except ProcessLookupError:
-        pass
-
-
-def cleanup_stale_runs(vault: Vault) -> int:
-    """Remove sandbox homes left behind by a killed daemon."""
-    runs = vault.state_dir / "run"
-    if not runs.exists():
-        return 0
-    removed = 0
-    for child in runs.iterdir():
-        if child.is_dir() and (time.time() - child.stat().st_mtime) > 3600:
-            shutil.rmtree(child, ignore_errors=True)
-            removed += 1
-    return removed

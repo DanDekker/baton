@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import re
 from collections.abc import Iterable
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 # Provider token shapes worth catching even when we did not mint them.
 _PATTERNS: list[tuple[str, tuple[str, ...], re.Pattern[str]]] = [
@@ -69,6 +69,7 @@ class Redactor:
             url_enc = quote(s, safe="")
             if len(url_enc) >= MIN_LEN:
                 expanded.add(url_enc)
+            expanded.add(quote_plus(s, safe=""))
             if len(s) >= 12:
                 b64 = base64.b64encode(s.encode()).decode()
                 expanded.add(b64)
@@ -86,6 +87,28 @@ class Redactor:
 
     def redact(self, text: str) -> str:
         return self.redact_counted(text)[0]
+
+    def redact_partial_tail(self, text: str) -> tuple[str, int]:
+        """Hide a known secret cut off by a timeout, in linear time per value."""
+        cut = 0
+        for secret in self._values:
+            prefix = [0] * len(secret)
+            matched = 0
+            for index in range(1, len(secret)):
+                while matched and secret[index] != secret[matched]:
+                    matched = prefix[matched - 1]
+                if secret[index] == secret[matched]:
+                    matched += 1
+                prefix[index] = matched
+            matched = 0
+            for char in text[-len(secret):]:
+                while matched and (matched == len(secret) or char != secret[matched]):
+                    matched = prefix[matched - 1]
+                if char == secret[matched]:
+                    matched += 1
+            if 0 < matched < len(secret):
+                cut = max(cut, matched)
+        return (text[:-cut] + self._marker, 1) if cut else (text, 0)
 
     def redact_counted(self, text: str) -> tuple[str, int]:
         """Redact and report how many substitutions were made."""
