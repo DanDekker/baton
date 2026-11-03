@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 286" role="img" aria-labelledby="title desc">
+  <title id="title">Store. Grant. Use.</title>
+  <desc id="desc">Store credentials in an encrypted vault. Grant scoped, expiring access. Run commands or HTTPS requests with known secrets redacted from results.</desc>
+  <defs><marker id="arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1L6 4L1 7" fill="none" stroke="#8b8d81" stroke-width="1.5"/></marker></defs>
+  <rect x=".5" y=".5" width="1199" height="285" rx="16" fill="#f5f2e9" stroke="#ddd8ca"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="32" y="40" font-size="13" font-weight="700" letter-spacing="2.2" fill="#6d7063">THE HANDOFF</text>
+    <text x="1168" y="40" text-anchor="end" font-size="16" fill="#6d7063">Credentials stay at the broker.</text>
+    <g fill="#fffef9" stroke="#dedbd0"><rect x="32" y="66" width="328" height="188" rx="12"/><rect x="436" y="66" width="328" height="188" rx="12"/><rect x="840" y="66" width="328" height="188" rx="12"/></g>
+    <g fill="none" stroke="#8b8d81" stroke-width="1.5" marker-end="url(#arrow)"><path d="M380 160H416"/><path d="M784 160H820"/></g>
+    <g fill="#edc67e"><rect x="54" y="90" width="32" height="27" rx="6"/><rect x="458" y="90" width="32" height="27" rx="6"/><rect x="862" y="90" width="32" height="27" rx="6"/></g>
+    <g fill="#59421f" font-size="12" font-weight="700" text-anchor="middle"><text x="70" y="108">01</text><text x="474" y="108">02</text><text x="878" y="108">03</text></g>
+    <g fill="#18242b" font-size="25" font-weight="650"><text x="101" y="112">Store</text><text x="505" y="112">Grant</text><text x="909" y="112">Use</text></g>
+    <g fill="none" stroke="#7e897d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="316" cy="100" r="6"/><path d="M312 105L301 116M304 113L307 116"/>
+      <rect x="708" y="92" width="25" height="23" rx="4"/><path d="M713 99H726M713 105H720M728 112L732 116L739 108"/>
+      <rect x="1113" y="92" width="27" height="23" rx="4"/><path d="M1119 99L1123 103L1119 107M1127 107H1134"/>
+    </g>
+    <g fill="#28362f" font-size="19" font-weight="500"><text x="54" y="158">An encrypted vault</text><text x="458" y="158">Access with an expiry</text><text x="862" y="158">Your tools, authenticated</text></g>
+    <g fill="#6a746a" font-size="16">
+      <text x="54" y="192">Add a token or import a login.</text><text x="54" y="219">Secrets stay with the broker.</text>
+      <text x="458" y="192">Choose the service and use limit.</text><text x="458" y="219">Revoke it when the job is done.</text>
+      <text x="862" y="192">Run a command or HTTPS request.</text><text x="862" y="219">Known secrets are redacted.</text>
+    </g>
+  </g>
+</svg>

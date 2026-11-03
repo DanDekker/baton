@@ -32,6 +32,8 @@ baton http https://api.github.com/user -H "Accept: application/vnd.github+json"
 
 When a context has multiple credentials, `baton http` automatically selects the credential whose allowed host matches the request URL. For `baton run`, put baton options before `--` and the child command after `--`. The child runs in your current working directory (or `--cwd PATH`) with a temporary `HOME` containing only the permitted CLI configuration. Output is checked for known secrets (including URL- and base64-encoded forms) before it is returned.
 
+Set a time limit with `baton run --timeout 30 github -- gh api /user`. On macOS and Linux, a timeout stops the command and children in its process group before removing the temporary home. Partial output is still returned with secrets redacted, and invalid text bytes are replaced instead of causing a traceback. Returned command arguments and launch errors are also checked for known secrets.
+
 ## Give an agent temporary access
 
 ```bash

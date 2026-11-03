@@ -1,6 +1,9 @@
 import asyncio
 import json
+import os
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -59,6 +62,98 @@ def test_run_timeout_kills_child(vault):
     result = runner.run(vault, "ghctx", ["sh", "-c", "sleep 5"], timeout=0.3)
     assert result.timed_out is True
     assert result.exit_code < 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+@pytest.mark.parametrize("parent_waits", [False, True])
+def test_run_timeout_stops_descendants_before_cleanup(vault, tmp_path, parent_waits):
+    marker = tmp_path / "child-survived"
+    child = (
+        "import os, time; from pathlib import Path; "
+        "print(os.environ['GH_TOKEN'], flush=True); "
+        f"time.sleep(2); Path({str(marker)!r}).write_text('survived')"
+    )
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        + ("time.sleep(10)" if parent_waits else "pass")
+    )
+
+    result = runner.run(vault, "ghctx", [sys.executable, "-c", parent], timeout=1)
+
+    assert result.timed_out
+    assert result.exit_code < 0
+    assert "«baton:redacted»" in result.stdout
+    assert GH_TOKEN not in result.stdout
+    time.sleep(2)
+    assert not marker.exists(), "a descendant kept running after the timeout"
+    assert not list((vault.state_dir / "run").iterdir())
+
+
+@pytest.mark.parametrize("timeout", [None, 1])
+def test_run_keeps_and_redacts_non_utf8_output(vault, timeout):
+    command = (
+        "import os, time; "
+        "os.write(1, b'\\xff' + os.environ['GH_TOKEN'].encode() + b'\\n'); "
+        "os.write(2, b'\\xfe' + os.environ['GH_TOKEN'].encode() + b'\\n'); "
+        + ("time.sleep(3)" if timeout else "pass")
+    )
+
+    result = runner.run(vault, "ghctx", [sys.executable, "-c", command], timeout=timeout)
+
+    assert result.timed_out == (timeout is not None)
+    assert result.stdout == "\ufffd«baton:redacted»\n"
+    assert result.stderr == "\ufffd«baton:redacted»\n"
+    assert result.redactions == 2
+    assert GH_TOKEN not in json.dumps(result.as_dict())
+    assert not list((vault.state_dir / "run").iterdir())
+
+
+def test_run_redacts_returned_arguments_without_changing_the_command(vault):
+    command = [
+        sys.executable, "-c",
+        "import os, sys; print(sys.argv[1] == os.environ['GH_TOKEN'])", GH_TOKEN,
+    ]
+
+    result = runner.run(vault, "ghctx", command)
+
+    assert result.exit_code == 0
+    assert result.stdout == "True\n"
+    assert command[-1] == GH_TOKEN
+    assert result.argv[-1] == "«baton:redacted»"
+    assert result.redactions == 1
+    assert GH_TOKEN not in json.dumps(result.as_dict())
+
+
+@pytest.mark.parametrize("failure", ["missing-command", "permission", "missing-cwd"])
+def test_run_redacts_launch_errors_and_cleans_up(vault, tmp_path, failure):
+    secret_path = tmp_path / GH_TOKEN
+    command = [str(secret_path)]
+    cwd = None
+    if failure == "permission":
+        secret_path.write_text("not executable")
+    elif failure == "missing-cwd":
+        command = [sys.executable, "-c", "pass"]
+        cwd = str(secret_path)
+
+    with pytest.raises(runner.RunError) as caught:
+        runner.run(vault, "ghctx", command, cwd=cwd)
+
+    assert GH_TOKEN not in str(caught.value)
+    assert "«baton:redacted»" in str(caught.value)
+    assert not list((vault.state_dir / "run").iterdir())
+
+
+def test_run_redacts_executable_paths_in_audit(vault, tmp_path):
+    executable = tmp_path / GH_TOKEN
+    executable.write_text("#!/bin/sh\nprintf 'done\\n'\n")
+    executable.chmod(0o700)
+
+    result = runner.run(vault, "ghctx", [str(executable)])
+
+    assert result.exit_code == 0
+    assert result.stdout == "done\n"
+    assert GH_TOKEN not in json.dumps(vault.audit_tail(10))
 
 
 def test_run_honours_lease_service_scope(vault):
@@ -236,6 +331,18 @@ def test_mcp_lease_then_run_roundtrip(vault, tmp_path):
     assert "hello-stdin" in result["stdout"]
     assert str(tmp_path.resolve()) in result["stdout"]
     assert GH_TOKEN not in result["stdout"]
+
+
+def test_mcp_run_redacts_command_metadata(vault):
+    server = build(vault)
+    result = _payload(asyncio.run(server.call_tool("baton_run", {
+        "lease_or_context": "ghctx",
+        "argv": [sys.executable, "-c", "pass", GH_TOKEN],
+    })))
+
+    assert result["exit_code"] == 0
+    assert result["argv"][-1] == "«baton:redacted»"
+    assert GH_TOKEN not in json.dumps(result)
 
 
 def test_mcp_revoke_blocks_further_use(vault):
