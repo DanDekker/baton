@@ -38,7 +38,7 @@ baton setup --auto               # connect installed MCP clients
 
 Agents on different machines can connect to one broker using paired identities. Each machine keeps its private key; credentials stay at the broker. A recipient accepts a grant from its inbox, uses the permitted APIs, and can hand narrower access plus a task summary to another paired agent. Models and providers do not need their own integrations.
 
-See [remote pairing and handoffs](docs/remote.md) for the setup. Remote access supports HTTPS APIs through CLI or MCP. Shell commands and credential administration stay local.
+See [remote pairing and handoffs](https://github.com/DanDekker/baton/blob/main/docs/remote.md) for the setup. Remote access supports HTTPS APIs through CLI or MCP. Shell commands and credential administration stay local.
 
 ## Cryptography at a glance
 
