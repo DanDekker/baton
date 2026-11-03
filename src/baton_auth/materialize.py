@@ -18,7 +18,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from .models import BatonError, Context, LeaseError
 from .vault import Vault
@@ -74,6 +73,8 @@ def _refs(template: str) -> set[str]:
 
 
 def _safe_subpath(root: Path, rel: str, where: str) -> Path:
+    if "\x00" in rel:
+        raise MaterializeError(f"{where}: path contains a null byte")
     cleaned = rel.lstrip("/")
     if not cleaned or Path(cleaned).is_absolute() or ".." in Path(cleaned).parts:
         raise MaterializeError(f"{where}: unsafe path {rel!r}")
@@ -194,7 +195,7 @@ def apply(plan_obj: Plan, home: Path) -> dict[str, str]:
     env = dict(plan_obj.env)
     for name, value in list(env.items()):
         if value.startswith("HOME_REL:"):
-            env[name] = f"{os_home}/{value[len('HOME_REL:'):]}"
+            env[name] = str(_safe_subpath(home, value[len("HOME_REL:"):], f"environment {name}"))
     env.update(
         {
             "HOME": os_home,
