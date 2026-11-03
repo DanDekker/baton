@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-import math
 import secrets
 import time
 from typing import Any, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
 from . import crypto
-from .models import Lease, LeaseError
+from .models import Lease, LeaseError, validate_lease_limits
 
 if TYPE_CHECKING:
     from .vault import Vault
@@ -54,15 +53,7 @@ def _row(vault: Vault, handle: str):
     if not isinstance(handle, str) or len(handle) > 4096:
         raise LeaseError("invalid lease handle")
     if handle.startswith("btn_"):
-        try:
-            body, signature = handle[4:].split(".", 1)
-            if not secrets.compare_digest(signature, vault._sign(body)):
-                raise ValueError()
-            lease_id = json.loads(crypto.b64u_decode(body))["i"]
-            if not isinstance(lease_id, str):
-                raise ValueError()
-        except (ValueError, KeyError, TypeError):
-            raise LeaseError("invalid lease token") from None
+        lease_id = vault._lease_token_id(handle)
         row = vault._conn.execute("SELECT * FROM leases WHERE id=?", (lease_id,)).fetchone()
         if row is not None and not secrets.compare_digest(
             row["token_hash"], crypto.digest(handle.encode(), 32).hex()
@@ -100,10 +91,7 @@ def _chain(
 
 
 def _limits(ttl: float, max_uses: int | None) -> None:
-    if isinstance(ttl, bool) or not isinstance(ttl, (float, int)) or not math.isfinite(ttl) or ttl <= 0:
-        raise LeaseError("TTL must be a positive finite number")
-    if max_uses is not None and (type(max_uses) is not int or max_uses <= 0):
-        raise LeaseError("use budget must be a positive integer")
+    validate_lease_limits(ttl, max_uses)
 
 
 def _methods(values: list[str]) -> list[str]:
