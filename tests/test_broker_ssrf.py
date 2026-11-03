@@ -95,20 +95,17 @@ def test_cli_http_parser_flags():
 
 def _stub_client(monkeypatch, response):
     calls = []
+    original = httpx.Client
 
-    class Client:
-        def __init__(self, **kwargs):
-            calls.append(("init", kwargs))
+    def Client(**kwargs):
+        calls.append(("init", kwargs))
 
-        def __enter__(self):
-            return self
+        def handle(request):
+            calls.append(("request", request.method, str(request.url), dict(request.headers)))
+            return httpx.Response(response.status_code, headers=response.headers,
+                                  stream=httpx.ByteStream(response.content))
 
-        def __exit__(self, *_args):
-            pass
-
-        def request(self, method, url, **kwargs):
-            calls.append(("request", method, url, kwargs))
-            return response
+        return original(transport=httpx.MockTransport(handle), **kwargs)
 
     monkeypatch.setattr(broker.httpx, "Client", Client)
     return calls
@@ -141,7 +138,7 @@ def test_broker_returns_redirect_without_following_it(vault, monkeypatch):
     response = broker.request(vault, "default", "GET", "http://127.0.0.1/redirect")
     assert response.status == 302
     assert response.headers["location"] == "http://169.254.169.254/latest/meta-data/"
-    assert calls[0] == ("init", {"timeout": 30.0, "follow_redirects": False})
+    assert calls[0] == ("init", {"timeout": 10.0, "follow_redirects": False, "trust_env": False})
     assert len([call for call in calls if call[0] == "request"]) == 1
 
 
@@ -168,7 +165,7 @@ def test_broker_enforces_credential_allowed_hosts(vault, monkeypatch):
     gh = build_credential("gh", "github", {"token": "ghp_" + "a" * 36})
     vault.put_credential(gh)
     vault.put_context(Context(name="ghctx", credentials=["gh"]))
-    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: None)
+    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: ["93.184.216.34"])
     _stub_client(monkeypatch, httpx.Response(200, text="ok"))
 
     # Allowed GitHub host succeeds

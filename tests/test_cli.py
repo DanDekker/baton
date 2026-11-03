@@ -398,19 +398,14 @@ def test_cli_json_outputs_and_http_headers(env, monkeypatch, capsys):
 
     seen_headers = {}
 
-    class _Client:
-        def __init__(self, **_kw):
-            pass
+    original_client = httpx.Client
 
-        def __enter__(self):
-            return self
+    def handler(request):
+        seen_headers.update(request.headers)
+        return httpx.Response(200, stream=httpx.ByteStream(b'{"ok":true}'))
 
-        def __exit__(self, *_a):
-            pass
-
-        def request(self, _method, _url, **kwargs):
-            seen_headers.update(kwargs.get("headers") or {})
-            return httpx.Response(200, text='{"ok":true}')
+    def _Client(**kwargs):
+        return original_client(transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(broker.httpx, "Client", _Client)
     assert main([
@@ -420,7 +415,7 @@ def test_cli_json_outputs_and_http_headers(env, monkeypatch, capsys):
     ]) == 0
     http_out = json.loads(capsys.readouterr().out)
     assert http_out["status"] == 200
-    assert seen_headers["X-Custom"] == "hello"
+    assert seen_headers["x-custom"] == "hello"
 
 
 def test_cred_import_from_files_and_env(env, tmp_path, monkeypatch, capsys):
@@ -483,20 +478,14 @@ def test_zero_ceremony_add_run_http_and_list(env, monkeypatch, capsys):
     assert "zero_ceremony_ok" in capsys.readouterr().out
 
     # `baton http URL` without naming a context auto-matches by host
-    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: None)
+    monkeypatch.setattr(broker, "validate_target_url", lambda *_a, **_kw: ["93.184.216.34"])
 
-    class _Client:
-        def __init__(self, **_kw):
-            pass
+    original_client = httpx.Client
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_a):
-            pass
-
-        def request(self, _method, _url, **_kwargs):
-            return httpx.Response(200, text='{"login":"octo"}')
+    def _Client(**kwargs):
+        return original_client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(b'{"login":"octo"}'))
+        ), **kwargs)
 
     monkeypatch.setattr(broker.httpx, "Client", _Client)
     assert main([

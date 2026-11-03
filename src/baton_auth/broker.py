@@ -16,6 +16,7 @@ import hmac
 import ipaddress
 import socket
 import time
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -76,6 +77,8 @@ def validate_target_url(
     host = parsed.hostname
     if not host:
         raise BrokerError("missing host in URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise BrokerError("URL userinfo is not permitted")
 
     host_lower = host.lower()
     if host_lower in _METADATA_HOSTS:
@@ -250,7 +253,7 @@ def _sigv4(
     service = str(cred.auth.get("service") or "execute-api")
 
     parsed = urlparse(url)
-    host = parsed.netloc
+    host = httpx.URL(url).netloc.decode("ascii")
     now = datetime.now(timezone.utc)
     amzdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = now.strftime("%Y%m%d")
@@ -314,6 +317,10 @@ def attach_auth(
     field_name = str(cred.auth.get("field", "token"))
     secret = cred.secret.get(field_name, "")
     out = dict(headers)
+    protected = "authorization" if scheme in ("bearer", "basic", "sigv4") else (
+        str(cred.auth.get("header", "x-api-key")).lower() if scheme == "header" else None
+    )
+    out = {key: value for key, value in out.items() if key.lower() != protected}
     query: dict[str, str] = {}
 
     if scheme == "sigv4":
@@ -357,13 +364,20 @@ def request(
     allow_loopback: bool = True,
     recipient: str | None = None,
 ) -> HttpResponse:
+    try:
+        valid_timeout = type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0
+    except OverflowError:
+        valid_timeout = False
+    if not valid_timeout:
+        raise BrokerError("timeout must be a positive finite number")
+    timeout = min(timeout, 30.0)
     if recipient is not None:
         if not target:
             raise LeaseError("remote requests require a recipient-bound lease")
         allow_private = allow_loopback = False
     addresses = None
     if recipient is None:
-        validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
+        addresses = validate_target_url(url, allow_private=allow_private, allow_loopback=allow_loopback)
     lease = None
     if recipient is not None or (target and target.startswith("btn_")):
         lease = vault.resolve_lease(target, consume=recipient is None, recipient=recipient)
@@ -411,6 +425,9 @@ def request(
         headers.pop(str(cred.auth.get("header", "")).lower(), None)
         headers["accept-encoding"] = "identity"
 
+    headers = {k: v for k, v in (headers or {}).items() if k.lower() not in ("host", "accept-encoding")}
+    headers["accept-encoding"] = "identity"
+
     payload = body if body is not None else b""
     if json_body is not None:
         import json as _json
@@ -421,38 +438,33 @@ def request(
     public_url = url
     final_headers, query = attach_auth(cred, method.upper(), url, dict(headers or {}), payload)
     if query:
-        sep = "&" if "?" in url else "?"
-        url = url + sep + "&".join(f"{k}={quote(v, safe='')}" for k, v in query.items())
+        url = str(httpx.URL(url).copy_merge_params(query))
 
     # A redirect destination has not passed the SSRF guard. Return the 3xx
     # response so the caller can explicitly make a separately validated request.
-    bytes_truncated = False
-    if recipient is None:
-        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            resp = client.request(method.upper(), url, headers=final_headers, content=payload or None)
-        raw = resp.text
-    else:
-        # Pin the validated address; SNI and Host retain the authorized HTTPS origin.
-        # No proxy environment, DNS re-resolution, redirects, or unbounded body buffering.
-        parsed = httpx.URL(url)
-        pinned = parsed.copy_with(host=addresses[0])
-        final_headers["Host"] = parsed.netloc.decode("ascii")
+    from .transport import pinned_stream
+
+    if recipient is not None:
         vault.resolve_lease(target, recipient=recipient)
-        deadline = time.monotonic() + min(timeout, 30.0)
-        with httpx.Client(timeout=min(timeout, 10.0), follow_redirects=False, trust_env=False) as client:
-            with client.stream(method.upper(), pinned, headers=final_headers, content=payload or None,
-                               extensions={"sni_hostname": parsed.host}) as resp:
-                if resp.headers.get("content-encoding", "identity").lower() != "identity":
-                    raise BrokerError("remote upstream must support identity content encoding")
-                data = bytearray()
-                for chunk in resp.iter_raw():
-                    if time.monotonic() > deadline:
-                        raise BrokerError("remote upstream response deadline exceeded")
-                    data.extend(chunk[:MAX_BODY + 1 - len(data)])
-                    if len(data) > MAX_BODY:
-                        break
-                bytes_truncated = len(data) > MAX_BODY
-                raw = data.decode("utf-8", errors="replace")
+    deadline = time.monotonic() + timeout
+    try:
+        with pinned_stream(method.upper(), url, addresses, headers=final_headers,
+                           content=payload or None, timeout=timeout) as resp:
+            if resp.headers.get("content-encoding", "identity").lower() != "identity":
+                raise BrokerError("upstream must support identity content encoding")
+            data = bytearray()
+            for chunk in resp.iter_raw():
+                if time.monotonic() > deadline:
+                    raise BrokerError("upstream response deadline exceeded")
+                data.extend(chunk[:MAX_BODY + 1 - len(data)])
+                if len(data) > MAX_BODY:
+                    break
+            bytes_truncated = len(data) > MAX_BODY
+            raw = data.decode("utf-8", errors="replace")
+    except httpx.HTTPError:
+        if recipient is not None:
+            raise
+        raise BrokerError("upstream request failed") from None
 
     # Query auth percent-encodes values. Echoes in bodies or Location headers
     # need to be scrubbed in both their original and wire representations.
@@ -484,7 +496,7 @@ def request(
         lease.id if lease else None,
         recipient,
         "http",
-        f"{method.upper()} {urlparse(url).netloc}{urlparse(url).path}",
+        redactor(f"{method.upper()} {urlparse(url).netloc}{urlparse(url).path}"),
         resp.is_success,
         {"status": resp.status_code, "credential": cred.name},
     )
