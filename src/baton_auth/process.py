@@ -125,7 +125,7 @@ def capture(
     if failures:
         raise CaptureError(failures[0])
     return Captured(
-        -signal.SIGKILL if timed_out else proc.returncode,
+        -getattr(signal, "SIGKILL", 9) if timed_out else proc.returncode,
         output.get("stdout", b""),
         output.get("stderr", b""),
         timed_out,

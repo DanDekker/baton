@@ -1,10 +1,11 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from baton_auth import runner
+from baton_auth import process, runner
 from baton_auth.catalog import build_credential
 from baton_auth.models import BatonError, Context
 from baton_auth.vault import Vault
@@ -91,3 +92,12 @@ def test_timeout_redacts_incomplete_secret_output(vault, secret):
     result = runner.run(vault, "api", [sys.executable, "-c", script], timeout=0.2)
     assert result.timed_out and result.stdout == "«baton:redacted»"
     assert partial not in result.stdout
+
+
+def test_timeout_status_without_posix_signals(monkeypatch):
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(process, "signal", SimpleNamespace())
+    result = process.capture(
+        [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.1
+    )
+    assert result.timed_out and result.returncode == -9
