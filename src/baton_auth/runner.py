@@ -115,73 +115,85 @@ def run(
             if var in env and var not in p.context.passthrough:
                 del env[var]
 
+        redactor = Redactor([*p.secrets, *(env[k] for k in p.sources if k in env)])
         argv_list = list(argv)
         run_cwd: str | None = None
         if cwd is not None:
             resolved_cwd = Path(cwd).expanduser()
             if not resolved_cwd.is_dir():
-                raise RunError(f"working directory not found: {cwd}")
+                raise RunError(redactor(f"working directory not found: {cwd}"))
             run_cwd = str(resolved_cwd)
         try:
-            proc = subprocess.run(
+            with subprocess.Popen(
                 argv_list,
                 cwd=run_cwd,
                 env=env,
-                input=stdin,
-                capture_output=True,
+                stdin=subprocess.PIPE if stdin is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
-            )
-            out, err, code = proc.stdout, proc.stderr, proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            out = _decode(exc.stdout)
-            err = _decode(exc.stderr)
-            code = -signal.SIGKILL
-        except FileNotFoundError as exc:
-            raise RunError(f"command not found: {argv_list[0]}") from exc
+                errors="replace",
+                start_new_session=os.name == "posix",
+            ) as proc:
+                try:
+                    out, err = proc.communicate(stdin, timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _kill_command(proc)
+                    out, err = proc.communicate()
+                except BaseException:
+                    _kill_command(proc)
+                    proc.wait()
+                    raise
+                code = -signal.SIGKILL if timed_out else proc.returncode
+        except FileNotFoundError:
+            raise RunError(redactor(f"command not found: {argv_list[0]}")) from None
+        except OSError as exc:
+            raise RunError(redactor(f"cannot run command: {exc}")) from None
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
 
-    # Only credential-derived values are redacted. Feeding every env value in
-    # here would scrub HOME/PATH out of the child's own output.
-    redactor = Redactor([*p.secrets, *(env[k] for k in p.sources if k in env)])
     clean_out, n1 = redactor.redact_counted(out)
     clean_err, n2 = redactor.redact_counted(err)
+    redacted_args = [redactor.redact_counted(arg) for arg in argv_list]
+    clean_argv = [arg for arg, _ in redacted_args]
+    redactions = n1 + n2 + sum(count for _, count in redacted_args)
     duration = int((time.monotonic() - started) * 1000)
 
     vault.audit(
         lease_id,
         None,
         "run",
-        argv_list[0],
+        clean_argv[0],
         code == 0,
         {
             "context": context_name,
             "exit_code": code,
-            "redactions": n1 + n2,
+            "redactions": redactions,
             "argv_len": len(argv_list),
         },
     )
     return RunResult(
-        argv=argv_list,
+        argv=clean_argv,
         context=context_name,
         lease_id=lease_id,
         exit_code=code,
         stdout=clean_out,
         stderr=clean_err,
         duration_ms=duration,
-        redactions=n1 + n2,
+        redactions=redactions,
         timed_out=timed_out,
     )
 
 
-def _decode(data: object) -> str:
-    if data is None:
-        return ""
-    if isinstance(data, bytes):
-        return data.decode(errors="replace")
-    return str(data)
+def _kill_command(proc: subprocess.Popen[str]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 def cleanup_stale_runs(vault: Vault) -> int:

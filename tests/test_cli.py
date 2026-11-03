@@ -276,6 +276,45 @@ def test_run_preserves_child_argument_separator(env, capsys):
     assert "['--', 'tail']" in capsys.readouterr().out
 
 
+def test_run_reports_timeouts_with_redacted_partial_output(env, capsys):
+    token = "sample_token_12345"
+    assert main([
+        "cred", "add", "api", "--provider", "generic", "--field", f"token={token}",
+        "--state-dir", str(env),
+    ]) == 0
+    capsys.readouterr()
+
+    assert main([
+        "run", "--state-dir", str(env), "--timeout", "1", "api", "--",
+        sys.executable, "-c", "import sys, time; print(sys.argv[1], flush=True); time.sleep(3)",
+        token,
+    ]) == 1
+
+    captured = capsys.readouterr()
+    assert "command timed out" in captured.err
+    assert "«baton:redacted»" in captured.out
+    assert token not in captured.out + captured.err
+
+
+def test_run_json_redacts_command_arguments(env, capsys):
+    token = "sample_token_12345"
+    assert main([
+        "cred", "add", "api", "--provider", "generic", "--field", f"token={token}",
+        "--state-dir", str(env),
+    ]) == 0
+    capsys.readouterr()
+
+    assert main([
+        "run", "--state-dir", str(env), "--json", "api", "--",
+        sys.executable, "-c", "pass", token,
+    ]) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["argv"][-1] == "«baton:redacted»"
+    assert token not in captured.out
+    assert captured.err == ""
+
+
 def test_http_invalid_json_has_friendly_error(env, capsys):
     assert main([
         "http", "missing", "https://example.com", "--body", "{",

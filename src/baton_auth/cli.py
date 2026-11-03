@@ -21,7 +21,7 @@ from typing import Any
 
 from . import __version__, broker, catalog, importer, integration, runner
 from .materialize import plan
-from .models import BatonError, Context, Credential, UnknownContext
+from .models import BatonError, Context, UnknownContext
 from .redact import Redactor
 from .vault import Vault
 
@@ -380,6 +380,8 @@ def cmd_run(v: Vault, args: argparse.Namespace) -> int:
         return result.exit_code if result.exit_code >= 0 else 1
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    if result.timed_out:
+        print("baton: command timed out", file=sys.stderr)
     if result.redactions:
         print(
             f"baton: {result.redactions} secret occurrence(s) redacted", file=sys.stderr
