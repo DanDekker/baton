@@ -8,6 +8,7 @@ hand the model its own credentials.
 from __future__ import annotations
 
 import base64
+import json
 import re
 from collections.abc import Iterable
 from urllib.parse import quote, quote_plus
@@ -66,6 +67,8 @@ class Redactor:
             if not isinstance(s, str) or len(s) < MIN_LEN:
                 continue
             expanded.add(s)
+            for ensure_ascii in (False, True):
+                expanded.add(json.dumps(s, ensure_ascii=ensure_ascii)[1:-1])
             url_enc = quote(s, safe="")
             if len(url_enc) >= MIN_LEN:
                 expanded.add(url_enc)
