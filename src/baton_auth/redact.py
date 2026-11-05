@@ -81,7 +81,11 @@ class Redactor:
         self._values = values
         self._marker = marker
         if values:
-            self._literal_pattern = re.compile("|".join(re.escape(v) for v in values))
+            patterns = (
+                re.sub(r"%[0-9A-Fa-f]{2}", lambda match: f"(?i:{match[0]})", re.escape(v))
+                for v in values
+            )
+            self._literal_pattern = re.compile("|".join(patterns))
         else:
             self._literal_pattern = None
 
