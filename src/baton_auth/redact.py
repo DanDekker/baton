@@ -39,6 +39,10 @@ _PATTERNS: list[tuple[str, tuple[str, ...], re.Pattern[str]]] = [
 MIN_LEN = 8
 
 
+def _normalize_percent_escapes(text: str) -> str:
+    return re.sub(r"%[0-9A-Fa-f]{1,2}", lambda match: match[0].upper(), text)
+
+
 def collect_values(obj: object) -> list[str]:
     """Every string in a nested secret payload, longest first."""
     out: list[str] = []
@@ -98,7 +102,9 @@ class Redactor:
     def redact_partial_tail(self, text: str) -> tuple[str, int]:
         """Hide a known secret cut off by a timeout, in linear time per value."""
         cut = 0
+        normalized = _normalize_percent_escapes(text)
         for secret in self._values:
+            secret = _normalize_percent_escapes(secret)
             prefix = [0] * len(secret)
             matched = 0
             for index in range(1, len(secret)):
@@ -108,7 +114,7 @@ class Redactor:
                     matched += 1
                 prefix[index] = matched
             matched = 0
-            for char in text[-len(secret):]:
+            for char in normalized[-len(secret):]:
                 while matched and (matched == len(secret) or char != secret[matched]):
                     matched = prefix[matched - 1]
                 if char == secret[matched]:

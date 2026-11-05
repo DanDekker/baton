@@ -51,3 +51,18 @@ def test_percent_escape_matching_keeps_literal_letters_case_sensitive():
     secret = "Private+Key/42"
     encoded = quote(secret, safe="").replace("Private", "private")
     assert Redactor([secret]).redact(encoded) == encoded
+
+
+@pytest.mark.parametrize("encode", [quote, quote_plus])
+def test_truncated_url_escapes_are_redacted_without_changing_other_output(encode):
+    redactor = Redactor(["Private 🔑+/=42"])
+    encoded = re.sub(
+        r"%[0-9A-F]{2}",
+        lambda match: match[0].lower(),
+        encode("Private 🔑+/=42", safe=""),
+    )
+    prefix = "unchanged %2f output: "
+    for end in range(1, len(encoded)):
+        clean, count = redactor.redact_partial_tail(prefix + encoded[:end])
+        assert clean == prefix + "«baton:redacted»", encoded[:end]
+        assert count == 1
