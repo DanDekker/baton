@@ -1,5 +1,7 @@
 import base64
 import json
+import re
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -28,3 +30,24 @@ def test_json_escaped_secrets_are_redacted(secret, ensure_ascii):
     clean, count = Redactor([secret]).redact_counted(f'{{"token":"{encoded}"}}')
     assert clean == '{"token":"«baton:redacted»"}'
     assert count == 1
+
+
+@pytest.mark.parametrize("encode", [quote, quote_plus])
+@pytest.mark.parametrize("mode", ["lower", "mixed"])
+def test_percent_escape_hex_is_case_insensitive(encode, mode):
+    secret = "Private Key+/=42"
+    encoded = encode(secret, safe="")
+    encoded = re.sub(
+        r"%[0-9A-F]{2}",
+        lambda match: match[0].lower() if mode == "lower" or match[0] == "%2F" else match[0],
+        encoded,
+    )
+    clean, count = Redactor([secret]).redact_counted(f"token={encoded}")
+    assert clean == "token=«baton:redacted»"
+    assert count == 1
+
+
+def test_percent_escape_matching_keeps_literal_letters_case_sensitive():
+    secret = "Private+Key/42"
+    encoded = quote(secret, safe="").replace("Private", "private")
+    assert Redactor([secret]).redact(encoded) == encoded
